@@ -1,0 +1,367 @@
+(function attachMainModule() {
+  const {
+    AppState,
+    setActiveProfile,
+    setActiveView,
+    setBrowseContext,
+    setData,
+    setSearchState,
+    subscribe,
+    exportBackup,
+    importBackup,
+    loadData,
+    renderSidebar,
+    showNewProfileModal,
+    renderProfileView,
+    focusSearchInput,
+    renderSearchPage,
+    requestBrowseSearch,
+  } = window.PackTracker;
+
+  const HOME_VIEW_ID = "view-home";
+  const SEARCH_VIEW_ID = "view-search";
+  const MODAL_ROOT_ID = "modal-root";
+  const CONTEXT_ROOT_ID = "context-menu-root";
+  const TOAST_ROOT_ID = "toast-root";
+  const PAGE_ENTER_CLASS = "page-enter";
+  const PAGE_EXIT_CLASS = "page-exit";
+  const PAGE_EXIT_MS = 120;
+  const PAGE_ENTER_MS = 240;
+  const PROJECT_TYPE_TO_TAB = {
+    mod: "mods",
+    resourcepack: "resourcepacks",
+    shader: "shaders",
+  };
+  const TAB_TO_PROJECT_TYPE = {
+    mods: "mod",
+    resourcepacks: "resourcepack",
+    shaders: "shader",
+  };
+  let lastVisibleViewId = null;
+
+  document.addEventListener("DOMContentLoaded", () => {
+    void initializeApp();
+  });
+
+  /**
+   * Boots the PackTracker application from persisted storage and wires UI events.
+   */
+  async function initializeApp() {
+    try {
+      const data = await loadData();
+      setData(data);
+
+      if (data.profiles.length > 0) {
+        setActiveProfile(data.profiles[0].id);
+      }
+
+      bindTopLevelEvents();
+      window.PackTracker.showToast = showToast;
+      subscribe(() => {
+        renderApp();
+      });
+      renderApp();
+    } catch (error) {
+      console.error("PackTracker failed to initialize", error);
+      renderFatalState(error);
+    }
+  }
+
+  /**
+   * Renders the current app shell state, including active view visibility.
+   */
+  function renderApp() {
+    try {
+      renderSidebar();
+      toggleViews();
+
+      if ((AppState.data?.profiles || []).length === 0) {
+        renderWelcomeState();
+      } else {
+        renderProfileView();
+      }
+
+      renderSearchPage();
+    } catch (error) {
+      console.error("PackTracker failed to render", error);
+      renderFatalState(error);
+    }
+  }
+
+  /**
+   * Binds top-level application controls and custom event bridges.
+   */
+  function bindTopLevelEvents() {
+    const exportButton = document.getElementById("export-button");
+    const importInput = document.getElementById("import-input");
+    const newProfileButton = document.getElementById("new-profile-button");
+
+    exportButton?.addEventListener("click", exportBackup);
+    newProfileButton?.addEventListener("click", showNewProfileModal);
+
+    importInput?.addEventListener("change", async () => {
+      const file = importInput.files?.[0];
+      if (!file) {
+        return;
+      }
+
+      try {
+        await importBackup(file);
+        const firstProfile = AppState.data?.profiles?.[0];
+        if (firstProfile && !AppState.activeProfileId) {
+          setActiveProfile(firstProfile.id);
+        }
+      } catch (error) {
+        console.warn("PackTracker: failed to import backup", error);
+        showToast("Import failed", "danger");
+      } finally {
+        importInput.value = "";
+      }
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeTransientUi();
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setActiveView("search");
+        window.setTimeout(() => {
+          focusSearchInput();
+          if (typeof requestBrowseSearch === "function") {
+            requestBrowseSearch();
+          }
+        }, 0);
+      }
+    });
+
+    window.addEventListener("packtracker:open-search", (event) => {
+      const detail = event.detail || {};
+      const defaultTab = detail.sourceTab || PROJECT_TYPE_TO_TAB[detail.projectType] || AppState.browseContext.defaultTab || "mods";
+      const projectType = TAB_TO_PROJECT_TYPE[defaultTab] || detail.projectType || AppState.search.projectType;
+      setBrowseContext(defaultTab);
+      setSearchState(
+        {
+          query: detail.query || "",
+          projectType,
+          results: [],
+          offset: 0,
+          loading: true,
+        },
+        { notify: false }
+      );
+      setActiveView("search");
+      window.setTimeout(() => {
+        focusSearchInput();
+        if (typeof requestBrowseSearch === "function") {
+          requestBrowseSearch();
+        }
+      }, 0);
+    });
+  }
+
+  /**
+   * Toggles the home and search view containers based on current state.
+   */
+  function toggleViews() {
+    const homeView = document.getElementById(HOME_VIEW_ID);
+    const searchView = document.getElementById(SEARCH_VIEW_ID);
+    if (!homeView || !searchView) {
+      return;
+    }
+
+    const showSearch = AppState.activeView === "search";
+    const nextVisibleViewId = showSearch ? SEARCH_VIEW_ID : HOME_VIEW_ID;
+    const nextVisibleView = showSearch ? searchView : homeView;
+    const previousView = lastVisibleViewId === SEARCH_VIEW_ID ? searchView : lastVisibleViewId === HOME_VIEW_ID ? homeView : null;
+    const hiddenView = showSearch ? homeView : searchView;
+
+    if (previousView && previousView !== nextVisibleView) {
+      previousView.classList.remove("hidden");
+      previousView.classList.remove(PAGE_ENTER_CLASS);
+      previousView.classList.add(PAGE_EXIT_CLASS);
+      window.setTimeout(() => {
+        previousView.classList.remove(PAGE_EXIT_CLASS);
+        previousView.classList.add("hidden");
+      }, PAGE_EXIT_MS);
+    } else if (hiddenView !== nextVisibleView) {
+      hiddenView.classList.add("hidden");
+    }
+
+    if (nextVisibleView) {
+      nextVisibleView.classList.remove("hidden");
+      nextVisibleView.classList.remove(PAGE_EXIT_CLASS);
+      nextVisibleView.classList.add(PAGE_ENTER_CLASS);
+      window.setTimeout(() => {
+        nextVisibleView.classList.remove(PAGE_ENTER_CLASS);
+      }, PAGE_ENTER_MS);
+    }
+
+    lastVisibleViewId = nextVisibleViewId;
+  }
+
+  /**
+   * Renders the first-launch welcome state when no profiles exist yet.
+   */
+  function renderWelcomeState() {
+    const homeView = document.getElementById(HOME_VIEW_ID);
+    if (!homeView) {
+      return;
+    }
+
+    homeView.replaceChildren();
+    const wrapper = document.createElement("div");
+    wrapper.className = "welcome-state";
+
+    const icon = document.createElement("div");
+    icon.className = "welcome-icon";
+    icon.textContent = "⬡";
+
+    const title = document.createElement("div");
+    title.className = "welcome-title";
+    title.textContent = "No profiles yet";
+
+    const subtitle = document.createElement("div");
+    subtitle.className = "welcome-subtitle";
+    subtitle.textContent = "Create your first Minecraft profile and start collecting mods, resource packs, and shaders.";
+
+    const actions = document.createElement("div");
+    actions.className = "welcome-actions";
+
+    const createButton = document.createElement("button");
+    createButton.className = "btn btn-primary";
+    createButton.type = "button";
+    createButton.textContent = "+ New profile";
+    createButton.addEventListener("click", showNewProfileModal);
+
+    const browseButton = document.createElement("button");
+    browseButton.className = "btn";
+    browseButton.type = "button";
+    browseButton.textContent = "Browse Modrinth";
+    browseButton.addEventListener("click", () => {
+      setActiveView("search");
+      if (typeof requestBrowseSearch === "function") {
+        requestBrowseSearch();
+      }
+    });
+
+    const restore = document.createElement("div");
+    restore.className = "welcome-subtitle";
+    restore.append("Or ");
+
+    const importLabel = document.createElement("label");
+    importLabel.className = "inline-link";
+    importLabel.setAttribute("for", "import-input");
+    importLabel.textContent = "import a backup";
+
+    restore.append(importLabel, " to restore a previous session.");
+    actions.append(createButton, browseButton);
+    wrapper.append(icon, title, subtitle, actions, restore);
+    homeView.appendChild(wrapper);
+  }
+
+  /**
+   * Shows a toast notification in the bottom-right corner.
+   *
+   * @param {string} message - Toast message.
+   * @param {"success"|"danger"|"warning"} [variant] - Visual style.
+   */
+  function showToast(message, variant = "success") {
+    const root = document.getElementById(TOAST_ROOT_ID);
+    if (!root || !message) {
+      return;
+    }
+
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${variant}`;
+    toast.textContent = message;
+    root.appendChild(toast);
+
+    window.setTimeout(() => {
+      toast.classList.add("leaving");
+      window.setTimeout(() => {
+        toast.remove();
+      }, 180);
+    }, 2200);
+  }
+
+  /**
+   * Closes shared modals and context menus opened by any module.
+   */
+  function closeTransientUi() {
+    const modalRoot = document.getElementById(MODAL_ROOT_ID);
+    const contextRoot = document.getElementById(CONTEXT_ROOT_ID);
+    if (modalRoot) {
+      dismissRootChildren(modalRoot);
+    }
+    if (contextRoot) {
+      contextRoot.replaceChildren();
+    }
+  }
+
+  /**
+   * Renders a visible fatal-state message instead of leaving the UI unresponsive.
+   *
+   * @param {unknown} error - Initialization or render error.
+   */
+  function renderFatalState(error) {
+    const homeView = document.getElementById(HOME_VIEW_ID);
+    const searchView = document.getElementById(SEARCH_VIEW_ID);
+    if (searchView) {
+      searchView.classList.add("hidden");
+    }
+    if (!homeView) {
+      return;
+    }
+
+    homeView.classList.remove("hidden");
+    homeView.replaceChildren();
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "welcome-state";
+
+    const icon = document.createElement("div");
+    icon.className = "welcome-icon";
+    icon.textContent = "!";
+
+    const title = document.createElement("div");
+    title.className = "welcome-title";
+    title.textContent = "PackTracker could not load";
+
+    const subtitle = document.createElement("div");
+    subtitle.className = "welcome-subtitle";
+    subtitle.textContent = error instanceof Error ? error.message : "Unknown startup error.";
+
+    wrapper.append(icon, title, subtitle);
+    homeView.appendChild(wrapper);
+  }
+
+  /**
+   * Closes all mounted overlays in one root with a short exit animation.
+   *
+   * @param {HTMLElement} root - Root containing modal overlays.
+   */
+  function dismissRootChildren(root) {
+    const overlays = Array.from(root.children);
+    if (overlays.length === 0) {
+      return;
+    }
+
+    overlays.forEach((overlay) => {
+      overlay.classList.add("closing");
+    });
+
+    window.setTimeout(() => {
+      overlays.forEach((overlay) => {
+        if (overlay.parentElement === root) {
+          overlay.remove();
+        }
+      });
+    }, 150);
+  }
+
+  Object.assign(window.PackTracker, {
+    dismissRootChildren,
+  });
+})();
