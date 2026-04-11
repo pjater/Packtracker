@@ -1,0 +1,13 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Archived Tauri build artifacts
+tauri-archive/**/target/
+
+# Node
+node_modules/
