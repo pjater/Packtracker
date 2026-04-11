@@ -1,0 +1,59 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PackTracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+  <div id="app" class="app-wrapper">
+    <header id="topbar">
+      <div class="topbar-inner">
+        <div class="brand-mark" aria-label="PackTracker">
+          <img class="brand-logo" src="./assets/logo.png" alt="" aria-hidden="true" draggable="false">
+          <span class="brand-name">PACKTRACKER</span>
+        </div>
+        <div class="topbar-actions">
+          <button id="export-button" class="btn" type="button">⤓ Export backup</button>
+          <label class="btn" for="import-input">⤴ Import backup</label>
+          <input id="import-input" class="sr-only" type="file" accept="application/json,.json">
+        </div>
+      </div>
+    </header>
+
+    <aside id="sidebar">
+      <div class="sidebar-inner">
+        <div class="sidebar-section-label">Profiles</div>
+        <div id="profile-list" class="profile-list" aria-live="polite"></div>
+
+        <div class="sidebar-footer">
+          <button id="new-profile-button" class="btn btn-dashed" type="button">＋ New profile</button>
+        </div>
+      </div>
+    </aside>
+
+    <main id="main" class="main-content">
+      <section id="view-home" class="view" aria-label="Profile manager"></section>
+      <section id="view-search" class="view hidden" aria-label="Browse Modrinth"></section>
+    </main>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="context-menu-root"></div>
+  <div id="tooltip-root"></div>
+  <div id="toast-root"></div>
+
+  <script src="./js/platform.js"></script>
+  <script src="./js/state.js"></script>
+  <script src="./js/storage.js"></script>
+  <script src="./js/modrinth.js"></script>
+  <script src="./js/scanner.js"></script>
+  <script src="./js/ui-sidebar.js"></script>
+  <script src="./js/ui-modlist.js"></script>
+  <script src="./js/ui-search.js"></script>
+  <script src="./js/main.js"></script>
+</body>
+</html>
