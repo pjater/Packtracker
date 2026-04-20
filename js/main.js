@@ -5,9 +5,11 @@
     setActiveView,
     setBrowseContext,
     setData,
+    setSearchSource,
     setSearchState,
     subscribe,
     exportBackup,
+    parseShareLink,
     importBackup,
     loadData,
     renderSidebar,
@@ -15,11 +17,15 @@
     renderProfileView,
     focusSearchInput,
     renderSearchPage,
+    renderShareView,
     requestBrowseSearch,
+    showShareImportModal,
   } = window.PackTracker;
 
   const HOME_VIEW_ID = "view-home";
   const SEARCH_VIEW_ID = "view-search";
+  const SHARE_VIEW_ID = "view-share";
+  const APP_ROOT_ID = "app";
   const MODAL_ROOT_ID = "modal-root";
   const CONTEXT_ROOT_ID = "context-menu-root";
   const TOAST_ROOT_ID = "toast-root";
@@ -57,10 +63,19 @@
 
       bindTopLevelEvents();
       window.PackTracker.showToast = showToast;
-      subscribe(() => {
+      subscribe((detail) => {
+        const reason = detail?.reason || "update";
+        if (reason === "search" || reason === "search-results" || reason === "search-source") {
+          if (AppState.activeView === "search") {
+            renderSearchPage();
+          }
+          return;
+        }
+
         renderApp();
       });
       renderApp();
+      handleIncomingShareLink();
     } catch (error) {
       console.error("PackTracker failed to initialize", error);
       renderFatalState(error);
@@ -73,15 +88,19 @@
   function renderApp() {
     try {
       renderSidebar();
+      syncShellMode();
       toggleViews();
 
-      if ((AppState.data?.profiles || []).length === 0) {
+      if (AppState.activeView === "home" && (AppState.data?.profiles || []).length === 0) {
         renderWelcomeState();
-      } else {
+      } else if (AppState.activeView === "home") {
         renderProfileView();
       }
 
       renderSearchPage();
+      if (typeof renderShareView === "function") {
+        renderShareView();
+      }
     } catch (error) {
       console.error("PackTracker failed to render", error);
       renderFatalState(error);
@@ -96,7 +115,9 @@
     const importInput = document.getElementById("import-input");
     const newProfileButton = document.getElementById("new-profile-button");
 
-    exportButton?.addEventListener("click", exportBackup);
+    exportButton?.addEventListener("click", () => {
+      exportBackup(AppState.activeProfileId);
+    });
     newProfileButton?.addEventListener("click", showNewProfileModal);
 
     importInput?.addEventListener("change", async () => {
@@ -106,10 +127,15 @@
       }
 
       try {
-        await importBackup(file);
-        const firstProfile = AppState.data?.profiles?.[0];
-        if (firstProfile && !AppState.activeProfileId) {
-          setActiveProfile(firstProfile.id);
+        const result = await importBackup(file);
+        if (result?.importedProfile?.id) {
+          setActiveProfile(result.importedProfile.id);
+          setActiveView("home");
+        } else {
+          const firstProfile = AppState.data?.profiles?.[0];
+          if (firstProfile && !AppState.activeProfileId) {
+            setActiveProfile(firstProfile.id);
+          }
         }
       } catch (error) {
         console.warn("PackTracker: failed to import backup", error);
@@ -140,6 +166,9 @@
       const detail = event.detail || {};
       const defaultTab = detail.sourceTab || PROJECT_TYPE_TO_TAB[detail.projectType] || AppState.browseContext.defaultTab || "mods";
       const projectType = TAB_TO_PROJECT_TYPE[defaultTab] || detail.projectType || AppState.search.projectType;
+      if (detail.searchSource && typeof setSearchSource === "function") {
+        setSearchSource(detail.searchSource);
+      }
       setBrowseContext(defaultTab);
       setSearchState(
         {
@@ -167,15 +196,26 @@
   function toggleViews() {
     const homeView = document.getElementById(HOME_VIEW_ID);
     const searchView = document.getElementById(SEARCH_VIEW_ID);
-    if (!homeView || !searchView) {
+    const shareView = document.getElementById(SHARE_VIEW_ID);
+    if (!homeView || !searchView || !shareView) {
       return;
     }
 
-    const showSearch = AppState.activeView === "search";
-    const nextVisibleViewId = showSearch ? SEARCH_VIEW_ID : HOME_VIEW_ID;
-    const nextVisibleView = showSearch ? searchView : homeView;
-    const previousView = lastVisibleViewId === SEARCH_VIEW_ID ? searchView : lastVisibleViewId === HOME_VIEW_ID ? homeView : null;
-    const hiddenView = showSearch ? homeView : searchView;
+    const viewsById = {
+      [HOME_VIEW_ID]: homeView,
+      [SEARCH_VIEW_ID]: searchView,
+      [SHARE_VIEW_ID]: shareView,
+    };
+    const nextVisibleViewId = AppState.activeView === "search"
+      ? SEARCH_VIEW_ID
+      : AppState.activeView === "share"
+        ? SHARE_VIEW_ID
+        : HOME_VIEW_ID;
+    const nextVisibleView = viewsById[nextVisibleViewId];
+    const previousView = lastVisibleViewId ? viewsById[lastVisibleViewId] : null;
+    const hiddenViews = Object.entries(viewsById)
+      .filter(([id]) => id !== nextVisibleViewId)
+      .map(([, view]) => view);
 
     if (previousView && previousView !== nextVisibleView) {
       previousView.classList.remove("hidden");
@@ -185,8 +225,12 @@
         previousView.classList.remove(PAGE_EXIT_CLASS);
         previousView.classList.add("hidden");
       }, PAGE_EXIT_MS);
-    } else if (hiddenView !== nextVisibleView) {
-      hiddenView.classList.add("hidden");
+    } else {
+      hiddenViews.forEach((view) => {
+        if (view !== nextVisibleView) {
+          view.classList.add("hidden");
+        }
+      });
     }
 
     if (nextVisibleView) {
@@ -199,6 +243,18 @@
     }
 
     lastVisibleViewId = nextVisibleViewId;
+  }
+
+  /**
+   * Adjusts the main shell layout for dedicated share-download mode.
+   */
+  function syncShellMode() {
+    const app = document.getElementById(APP_ROOT_ID);
+    if (!app) {
+      return;
+    }
+
+    app.classList.toggle("share-mode", AppState.activeView === "share");
   }
 
   /**
@@ -238,7 +294,7 @@
     const browseButton = document.createElement("button");
     browseButton.className = "btn";
     browseButton.type = "button";
-    browseButton.textContent = "Browse Modrinth";
+    browseButton.textContent = "Browse projects";
     browseButton.addEventListener("click", () => {
       setActiveView("search");
       if (typeof requestBrowseSearch === "function") {
@@ -308,8 +364,12 @@
   function renderFatalState(error) {
     const homeView = document.getElementById(HOME_VIEW_ID);
     const searchView = document.getElementById(SEARCH_VIEW_ID);
+    const shareView = document.getElementById(SHARE_VIEW_ID);
     if (searchView) {
       searchView.classList.add("hidden");
+    }
+    if (shareView) {
+      shareView.classList.add("hidden");
     }
     if (!homeView) {
       return;
@@ -350,6 +410,10 @@
 
     overlays.forEach((overlay) => {
       overlay.classList.add("closing");
+      const modal = overlay.querySelector(".modal");
+      if (modal) {
+        modal.classList.add("closing");
+      }
     });
 
     window.setTimeout(() => {
@@ -359,6 +423,33 @@
         }
       });
     }, 150);
+  }
+
+  /**
+   * Parses and opens an incoming `?share=` URL payload once on app startup.
+   */
+  function handleIncomingShareLink() {
+    if (typeof parseShareLink !== "function" || typeof showShareImportModal !== "function") {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("share")) {
+      return;
+    }
+
+    try {
+      const sharedProfile = parseShareLink(url.toString());
+      url.searchParams.delete("share");
+      const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+      window.history.replaceState({}, "", nextUrl);
+      showShareImportModal(sharedProfile);
+    } catch (error) {
+      url.searchParams.delete("share");
+      const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+      window.history.replaceState({}, "", nextUrl);
+      showToast(error instanceof Error ? error.message : "Invalid share link", "danger");
+    }
   }
 
   Object.assign(window.PackTracker, {
