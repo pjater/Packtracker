@@ -1,11 +1,14 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <link rel="icon" type="image/png" href="./assets/logo.png">
+  <link rel="apple-touch-icon" href="./assets/logo.png">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PackTracker</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <link rel="stylesheet" href="./css/style.css">
 </head>
 <body>
@@ -37,7 +40,8 @@
 
     <main id="main" class="main-content">
       <section id="view-home" class="view" aria-label="Profile manager"></section>
-      <section id="view-search" class="view hidden" aria-label="Browse Modrinth"></section>
+      <section id="view-search" class="view hidden" aria-label="Browse projects"></section>
+      <section id="view-share" class="view hidden" aria-label="Shared profile downloads"></section>
     </main>
   </div>
 
@@ -46,13 +50,17 @@
   <div id="tooltip-root"></div>
   <div id="toast-root"></div>
 
+  <script src="./js/drag-order.js"></script>
   <script src="./js/platform.js"></script>
   <script src="./js/state.js"></script>
   <script src="./js/storage.js"></script>
   <script src="./js/modrinth.js"></script>
+  <script src="./js/curseforge.js"></script>
+  <script src="./js/download-cache.js"></script>
   <script src="./js/scanner.js"></script>
   <script src="./js/ui-sidebar.js"></script>
   <script src="./js/ui-modlist.js"></script>
+  <script src="./js/ui-share.js"></script>
   <script src="./js/ui-search.js"></script>
   <script src="./js/main.js"></script>
 </body>
