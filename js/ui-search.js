@@ -1,10 +1,11 @@
-﻿(function attachSearchModule() {
+(function attachSearchModule() {
 const namespace = window.PackTracker;
 const {
   AppState,
   setActiveProfile,
   setActiveView,
   setBrowseContext,
+  setSearchSource,
   setSearchResults,
   setSearchState,
   setViewMode,
@@ -16,6 +17,11 @@ const {
   getGameVersions,
   getProjectVersions,
   searchProjects,
+  cfSearchProjects,
+  cfGetProjectVersions,
+  openVersionPickerModal,
+  checkItemCompatibility,
+  showCompatibilityWarnings,
 } = namespace;
 const SEARCH_VIEW_ID = "view-search";
 const MODAL_ROOT_ID = "modal-root";
@@ -53,7 +59,7 @@ function requestBrowseSearch() {
 }
 
 /**
- * Renders the Modrinth search page and wires the search/filter controls.
+ * Renders the browse page and wires the search/filter controls.
  */
 function renderSearchPage() {
   const root = document.getElementById(SEARCH_VIEW_ID);
@@ -61,12 +67,16 @@ function renderSearchPage() {
     return;
   }
 
+  const activeElement = document.activeElement;
+  const shouldRestoreSearchFocus = activeElement instanceof HTMLInputElement && activeElement.id === SEARCH_INPUT_ID;
+  const previousSelectionStart = shouldRestoreSearchFocus ? activeElement.selectionStart : null;
+  const previousSelectionEnd = shouldRestoreSearchFocus ? activeElement.selectionEnd : null;
+  const previousScrollLeft = shouldRestoreSearchFocus ? activeElement.scrollLeft : 0;
+
   const desiredProjectType = mapBrowseTabToProjectType(AppState.browseContext?.defaultTab);
   if (desiredProjectType && AppState.search.projectType !== desiredProjectType) {
     setSearchState({ projectType: desiredProjectType }, { notify: false });
   }
-
-  root.replaceChildren();
 
   const page = document.createElement("div");
   page.id = "search-page";
@@ -84,10 +94,11 @@ function renderSearchPage() {
 
   const title = document.createElement("div");
   title.className = "search-title";
-  title.textContent = "Browse Modrinth";
+  title.textContent = `Browse ${resolveActiveSourceLabel()}`;
 
   titleRow.append(backButton, title);
-  header.append(titleRow, renderBrowseTabs());
+  const browseTabs = renderBrowseTabs();
+  header.append(titleRow, renderSourceToggle(), browseTabs);
 
   const searchWrap = document.createElement("div");
   searchWrap.className = "search-input-wrap";
@@ -108,6 +119,26 @@ function renderSearchPage() {
     );
     scheduleSearch();
   });
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+
+    event.preventDefault();
+    if (searchTimer) {
+      window.clearTimeout(searchTimer);
+      searchTimer = null;
+    }
+    setSearchState(
+      {
+        query: searchInput.value,
+        offset: 0,
+        results: [],
+      },
+      { notify: false }
+    );
+    void executeSearch(false);
+  });
 
   searchWrap.appendChild(searchInput);
   const controlsRow = document.createElement("div");
@@ -119,41 +150,41 @@ function renderSearchPage() {
   const feedback = document.createElement("div");
   feedback.className = "search-feedback";
   if (AppState.search.loading) {
-    feedback.textContent = "Searching Modrinth...";
+    feedback.textContent = `Searching ${resolveActiveSourceLabel()}...`;
   } else {
     feedback.textContent = `${AppState.search.totalHits || 0} results`;
   }
   page.appendChild(feedback);
 
-  const results = document.createElement("div");
-  results.className = getViewMode("browse") === "grid" ? "search-results is-grid" : "search-results";
+  const resultsHost = document.createElement("div");
+  resultsHost.className = "content-panel";
+  const activeLoader = AppState.search.projectType === "mod" ? AppState.search.loader : "";
   const currentSearchKey = JSON.stringify({
+    source: AppState.searchSource,
     query: AppState.search.query,
     projectType: AppState.search.projectType,
-    loader: AppState.search.loader,
+    loader: activeLoader,
     gameVersion: AppState.search.gameVersion,
   });
   const hasPendingCurrentSearch = AppState.search.loading && inflightSearchKey === currentSearchKey;
-  const shouldBootSearch = AppState.search.results.length === 0 && !hasPendingCurrentSearch;
+  const shouldBootSearch = (
+    AppState.search.results.length === 0
+    && !hasPendingCurrentSearch
+    && lastExecutedSearchKey !== currentSearchKey
+  );
 
   if ((AppState.search.loading || shouldBootSearch) && AppState.search.results.length === 0) {
-    const loading = document.createElement("div");
-    loading.className = getViewMode("browse") === "grid" ? "search-loader is-grid" : "search-loader";
-    for (let index = 0; index < 4; index += 1) {
-      const skeleton = document.createElement("div");
-      skeleton.className = "skeleton-card";
-      loading.appendChild(skeleton);
-    }
-    page.appendChild(loading);
+    renderSkeletonCards(resultsHost, getViewMode("browse") === "grid" ? 8 : 6, getViewMode("browse"));
   } else if (AppState.search.results.length === 0) {
-    results.appendChild(createEmptySearchState());
-    page.appendChild(results);
+    const emptyWrapper = document.createElement("div");
+    emptyWrapper.className = "results-wrapper search-results";
+    emptyWrapper.appendChild(createEmptySearchState());
+    resultsHost.appendChild(emptyWrapper);
   } else {
-    AppState.search.results.forEach((project) => {
-      results.appendChild(renderSearchCard(project));
-    });
-    page.appendChild(results);
+    renderResults(AppState.search.results, resultsHost, getViewMode("browse"));
   }
+
+  page.appendChild(resultsHost);
 
   if (!AppState.search.loading && AppState.search.results.length > 0 && AppState.search.results.length < AppState.search.totalHits) {
     const actionsRow = document.createElement("div");
@@ -166,7 +197,16 @@ function renderSearchPage() {
     page.appendChild(actionsRow);
   }
 
-  root.appendChild(page);
+  root.replaceChildren(page);
+  queueTabIndicatorUpdate(browseTabs);
+
+  if (shouldRestoreSearchFocus) {
+    searchInput.focus();
+    if (typeof previousSelectionStart === "number" && typeof previousSelectionEnd === "number") {
+      searchInput.setSelectionRange(previousSelectionStart, previousSelectionEnd);
+    }
+    searchInput.scrollLeft = previousScrollLeft;
+  }
 
   if (cachedGameVersions.length === 1) {
     void hydrateGameVersions();
@@ -175,6 +215,99 @@ function renderSearchPage() {
   if (shouldBootSearch) {
     void executeSearch(false);
   }
+}
+
+/**
+ * Animates search results into view using the existing layout modes.
+ *
+ * @param {Array<object>} results - Search results.
+ * @param {HTMLElement} container - Results host container.
+ * @param {"list"|"grid"} viewMode - Active browse layout.
+ */
+function renderResults(results, container, viewMode) {
+  container.replaceChildren();
+
+  const wrapper = document.createElement("div");
+  wrapper.className = viewMode === "grid" ? "results-wrapper search-results is-grid" : "results-wrapper search-results";
+  wrapper.style.opacity = "0";
+  wrapper.style.transform = "translateY(8px)";
+  wrapper.style.transition = "opacity 200ms ease, transform 200ms cubic-bezier(0.16, 1, 0.3, 1)";
+
+  results.forEach((hit, index) => {
+    const card = renderSearchCard(hit);
+    card.style.animationDelay = `${Math.min(index * 35, 280)}ms`;
+    wrapper.appendChild(card);
+  });
+
+  container.appendChild(wrapper);
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      wrapper.style.opacity = "1";
+      wrapper.style.transform = "translateY(0)";
+    });
+  });
+}
+
+/**
+ * Renders animated skeleton cards while browse results are loading.
+ *
+ * @param {HTMLElement} container - Results host container.
+ * @param {number} count - Number of placeholder cards.
+ * @param {"list"|"grid"} viewMode - Active browse layout.
+ */
+function renderSkeletonCards(container, count = 8, viewMode = "grid") {
+  container.replaceChildren();
+
+  const wrapper = document.createElement("div");
+  wrapper.className = viewMode === "grid" ? "results-wrapper search-results is-grid" : "results-wrapper search-results";
+
+  for (let index = 0; index < count; index += 1) {
+    const card = document.createElement("div");
+    card.className = "skeleton-card";
+    card.innerHTML = `
+      <div class="skeleton-line skeleton-icon"></div>
+      <div class="skeleton-line skeleton-title"></div>
+      <div class="skeleton-line skeleton-meta"></div>
+      <div class="skeleton-line skeleton-desc"></div>
+      <div class="skeleton-line skeleton-desc-2"></div>
+    `;
+    card.style.animationDelay = `${index * 60}ms`;
+    card.style.opacity = "0";
+    card.style.animation = `itemReveal 200ms ease ${Math.min(index * 40, 280)}ms both`;
+    wrapper.appendChild(card);
+  }
+
+  container.appendChild(wrapper);
+}
+
+/**
+ * Schedules a tab-indicator update after layout has settled.
+ *
+ * @param {HTMLElement} tabBarElement - Tab bar wrapper.
+ */
+function queueTabIndicatorUpdate(tabBarElement) {
+  window.requestAnimationFrame(() => {
+    updateTabIndicator(tabBarElement);
+  });
+}
+
+/**
+ * Aligns the sliding underline with the currently active tab.
+ *
+ * @param {HTMLElement} tabBarElement - Tab bar wrapper.
+ */
+function updateTabIndicator(tabBarElement) {
+  if (!(tabBarElement instanceof HTMLElement)) {
+    return;
+  }
+
+  const activeTab = tabBarElement.querySelector(".tab.active");
+  if (!(activeTab instanceof HTMLElement)) {
+    return;
+  }
+
+  tabBarElement.style.setProperty("--indicator-left", `${activeTab.offsetLeft}px`);
+  tabBarElement.style.setProperty("--indicator-width", `${activeTab.offsetWidth}px`);
 }
 
 /**
@@ -247,96 +380,70 @@ function renderSearchCard(project) {
     showProfilePicker(project, rect.left, rect.bottom + 4);
   });
 
+  const projectType = project.project_type || AppState.search.projectType || "mod";
+  const projectId = project.project_id || project.id || "";
+  const projectPageUrl = project.source_url
+    || buildProjectUrl(project.source || AppState.searchSource || "modrinth", projectType, project.slug || projectId, projectId);
+
+  const sourceLinkButton = document.createElement("button");
+  sourceLinkButton.className = "btn btn-small";
+  sourceLinkButton.type = "button";
+  sourceLinkButton.textContent = project.source === "curseforge" ? "CurseForge \u2197" : "Modrinth \u2197";
+  sourceLinkButton.title = "Open project page";
+  sourceLinkButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    window.open(projectPageUrl, "_blank", "noopener");
+  });
+
   const actions = document.createElement("div");
   actions.className = "search-card-actions";
-  actions.appendChild(addButton);
+  actions.append(sourceLinkButton, addButton);
   aside.appendChild(actions);
   card.appendChild(aside);
   return card;
 }
 
 /**
- * Opens a version-picker modal for adding a project into an profile.
+ * Opens the shared version-picker modal before a project is added to a profile.
  *
- * @param {object} project - Modrinth project hit.
+ * @param {object} project - Search result project.
  * @param {string} profileId - Target profile id.
  */
 async function showVersionPickerModal(project, profileId) {
-  const profile = AppState.data?.profiles.find((entry) => entry.id === profileId);
-  if (!profile) {
+  if (typeof openVersionPickerModal !== "function") {
     return;
   }
 
-  let versions = await getProjectVersions(project.project_id || project.id, {
-    loader: AppState.search.projectType === "mod" && profile.loader !== "vanilla" ? profile.loader : "",
-    gameVersion: profile.mcVersion,
-  });
-  if (versions.error || versions.length === 0) {
-    versions = await getProjectVersions(project.project_id || project.id);
-  }
-  if (versions.error || versions.length === 0) {
-    showTransientModal("No versions available", "Modrinth did not return any installable versions for this project.");
-    return;
-  }
-
-  const sortedVersions = sortVersionsNewestFirst(versions);
-  const overlay = createModalOverlay();
-  const modal = createModalCard();
-  modal.classList.add("modal-wide");
-
-  const title = createModalTitle(`Add ${(project.title || project.name)} to ${profile.name}`);
-  const subtitle = createModalSubtitle(
-    `Compatible versions for ${profile.loader === "vanilla" ? "Minecraft" : capitalize(profile.loader)} ${profile.mcVersion || "any version"}`
+  await openVersionPickerModal(
+    project.project_id || project.id,
+    "",
+    project.source || AppState.searchSource || "modrinth",
+    async (selectedVersion) => {
+      await resolveAndAddMod(project, selectedVersion, profileId, {
+        projectType: project.project_type || AppState.search.projectType,
+      });
+    },
+    {
+      profileId,
+      projectType: project.project_type || AppState.search.projectType || "mod",
+      projectName: project.title || project.name,
+      mode: "add",
+      confirmLabel: "Add selected version",
+    }
   );
+}
 
-  const list = document.createElement("div");
-  list.className = "version-list";
-
-  let selectedVersionId = sortedVersions[0].id;
-  sortedVersions.forEach((version, index) => {
-    const row = document.createElement("label");
-    row.className = "version-item";
-
-    const radio = document.createElement("input");
-    radio.type = "radio";
-    radio.name = "version-select";
-    radio.checked = index === 0;
-    radio.addEventListener("change", () => {
-      selectedVersionId = version.id;
-    });
-
-    const text = document.createElement("div");
-    text.className = "version-item-label";
-
-    const name = document.createElement("div");
-    name.className = "version-name";
-    name.textContent = version.version_number || "Unknown version";
-
-    const meta = document.createElement("div");
-    meta.className = "version-meta";
-    meta.textContent = buildMetaLine([
-      formatVersionList(version.game_versions),
-      `released ${formatRelativeDate(new Date(version.date_published).getTime())}`,
-    ]);
-
-    text.append(name, meta);
-    row.append(radio, text);
-    list.appendChild(row);
-  });
-
-  const actions = createActionRow();
-  const cancelButton = createButton("Cancel");
-  const addButton = createButton("Add selected version", "btn-accent");
-  cancelButton.addEventListener("click", closeSearchOverlays);
-  addButton.addEventListener("click", async () => {
-    const selectedVersion = sortedVersions.find((version) => version.id === selectedVersionId) || sortedVersions[0];
-    await resolveAndAddMod(project, selectedVersion, profileId);
-  });
-
-  actions.append(cancelButton, addButton);
-  modal.append(title, subtitle, list, actions);
-  overlay.appendChild(modal);
-  mountModal(overlay);
+/**
+ * Schedules a debounced search request after the user pauses typing.
+ */
+function scheduleSearch() {
+  if (searchTimer) {
+    window.clearTimeout(searchTimer);
+  }
+  searchTimer = window.setTimeout(() => {
+    searchTimer = null;
+    void executeSearch(false);
+  }, SEARCH_DEBOUNCE_MS);
 }
 
 /**
@@ -353,10 +460,25 @@ async function resolveAndAddMod(project, version, profileId, options = {}) {
   }
 
   const projectType = options.projectType || AppState.search.projectType;
+  const source = options.source || project.source || AppState.searchSource || "modrinth";
   const shouldReturnHome = options.returnHome !== false;
   const shouldCloseOverlays = options.closeOverlays !== false;
   if (projectType !== "mod") {
-    persistNonModProject(project, version, profileId, projectType);
+    const savedItem = persistNonModProject(project, version, profileId, projectType, source);
+    showItemCompatibilityWarnings(savedItem, profileId);
+    setActiveProfile(profileId);
+    if (shouldReturnHome) {
+      setActiveView("home");
+    }
+    if (shouldCloseOverlays) {
+      closeSearchOverlays();
+    }
+    return;
+  }
+
+  if (source !== "modrinth") {
+    const savedItem = addMod(profileId, mapProjectVersionToMod(project, version, [], source));
+    showItemCompatibilityWarnings(savedItem, profileId);
     setActiveProfile(profileId);
     if (shouldReturnHome) {
       setActiveView("home");
@@ -378,7 +500,8 @@ async function resolveAndAddMod(project, version, profileId, options = {}) {
 
   if (missingDependencies.length > 0) {
     if (options.skipDependencyModal) {
-      addMod(profileId, mapProjectVersionToMod(project, version, missingDependencies.map((entry) => entry.projectId)));
+      const savedItem = addMod(profileId, mapProjectVersionToMod(project, version, missingDependencies.map((entry) => entry.projectId), source));
+      showItemCompatibilityWarnings(savedItem, profileId);
       setActiveProfile(profileId);
       if (shouldReturnHome) {
         setActiveView("home");
@@ -392,7 +515,8 @@ async function resolveAndAddMod(project, version, profileId, options = {}) {
     return;
   }
 
-  addMod(profileId, mapProjectVersionToMod(project, version, []));
+  const savedItem = addMod(profileId, mapProjectVersionToMod(project, version, [], source));
+  showItemCompatibilityWarnings(savedItem, profileId);
   setActiveProfile(profileId);
   if (shouldReturnHome) {
     setActiveView("home");
@@ -409,10 +533,12 @@ async function resolveAndAddMod(project, version, profileId, options = {}) {
  */
 async function executeSearch(append) {
   const nextOffset = append ? AppState.search.results.length : 0;
+  const activeLoader = AppState.search.projectType === "mod" ? AppState.search.loader : "";
   const requestKey = JSON.stringify({
+    source: AppState.searchSource,
     query: AppState.search.query,
     projectType: AppState.search.projectType,
-    loader: AppState.search.loader,
+    loader: activeLoader,
     gameVersion: AppState.search.gameVersion,
   });
   const requestId = searchRequestSerial + 1;
@@ -430,10 +556,11 @@ async function executeSearch(append) {
     { notify: true }
   );
 
-  const response = await searchProjects({
+  const sourceSearch = AppState.searchSource === "curseforge" ? cfSearchProjects : searchProjects;
+  const response = await sourceSearch({
     query: AppState.search.query,
     projectType: AppState.search.projectType,
-    loader: AppState.search.loader,
+    loader: activeLoader,
     gameVersion: AppState.search.gameVersion,
     offset: nextOffset,
   });
@@ -455,7 +582,15 @@ async function executeSearch(append) {
   if (requestId === searchRequestSerial) {
     inflightSearchKey = "";
   }
-  setSearchResults(Array.isArray(response.hits) ? response.hits : [], append);
+  setSearchResults(
+    Array.isArray(response.hits)
+      ? response.hits.map((project) => ({
+          ...project,
+          source: project.source || AppState.searchSource,
+        }))
+      : [],
+    append
+  );
   setSearchState(
     {
       loading: false,
@@ -467,18 +602,6 @@ async function executeSearch(append) {
 }
 
 /**
- * Schedules a debounced search request after the user stops typing.
- */
-function scheduleSearch() {
-  if (searchTimer) {
-    window.clearTimeout(searchTimer);
-  }
-  searchTimer = window.setTimeout(() => {
-    void executeSearch(false);
-  }, SEARCH_DEBOUNCE_MS);
-}
-
-/**
  * Renders the filter row using current search state and cached game-version options.
  *
  * @returns {HTMLDivElement} Search filter row.
@@ -487,20 +610,25 @@ function renderFilterRow() {
   const row = document.createElement("div");
   row.className = "search-filters";
 
+  if (AppState.search.projectType === "mod") {
+    row.append(
+      createFilterSelect("Loader", "loader-filter", [
+        { value: "", label: "Any" },
+        { value: "fabric", label: "Fabric" },
+        { value: "forge", label: "Forge" },
+        { value: "neoforge", label: "NeoForge" },
+      ], AppState.search.loader, (value) => {
+        setSearchState({
+          loader: value,
+          offset: 0,
+          results: [],
+        }, { notify: false });
+        void executeSearch(false);
+      })
+    );
+  }
+
   row.append(
-    createFilterSelect("Loader", "loader-filter", [
-      { value: "", label: "Any" },
-      { value: "fabric", label: "Fabric" },
-      { value: "forge", label: "Forge" },
-      { value: "neoforge", label: "NeoForge" },
-    ], AppState.search.loader, (value) => {
-      setSearchState({
-        loader: value,
-        offset: 0,
-        results: [],
-      }, { notify: false });
-      void executeSearch(false);
-    }),
     createFilterSelect(
       "Version",
       "version-filter",
@@ -521,13 +649,51 @@ function renderFilterRow() {
 }
 
 /**
+ * Renders the Modrinth/CurseForge source toggle.
+ *
+ * @returns {HTMLDivElement} Source toggle row.
+ */
+function renderSourceToggle() {
+  const toggle = document.createElement("div");
+  toggle.className = "source-toggle";
+
+  [
+    { value: "modrinth", label: "Modrinth" },
+    { value: "curseforge", label: "CurseForge" },
+  ].forEach((source) => {
+    const button = document.createElement("button");
+    button.className = AppState.searchSource === source.value ? "source-toggle-btn active" : "source-toggle-btn";
+    button.type = "button";
+    button.textContent = source.label;
+    button.addEventListener("click", () => {
+      if (AppState.searchSource !== source.value) {
+        setSearchState(
+          {
+            results: [],
+            offset: 0,
+            totalHits: 0,
+            loading: false,
+          },
+          { notify: false }
+        );
+        setSearchSource(source.value);
+        requestBrowseSearch();
+      }
+    });
+    toggle.appendChild(button);
+  });
+
+  return toggle;
+}
+
+/**
  * Renders the top-level browse tabs and keeps project type in sync.
  *
  * @returns {HTMLDivElement} Browse tab row.
  */
 function renderBrowseTabs() {
   const tabs = document.createElement("div");
-  tabs.className = "browse-tabs";
+  tabs.className = "tab-bar browse-tabs";
 
   BROWSE_TABS.forEach((tab) => {
     const button = document.createElement("button");
@@ -539,6 +705,7 @@ function renderBrowseTabs() {
       setSearchState(
         {
           projectType: tab.projectType,
+          loader: tab.projectType === "mod" ? AppState.search.loader : "",
           results: [],
           offset: 0,
           loading: true,
@@ -588,8 +755,9 @@ function showProfilePicker(project, x, y) {
     item.type = "button";
     item.textContent = profile.name;
     item.addEventListener("click", () => {
-      root.replaceChildren();
-      void showVersionPickerModal(project, profile.id);
+      closeContextMenu(root, () => {
+        void showVersionPickerModal(project, profile.id);
+      });
     });
     menu.appendChild(item);
   });
@@ -599,14 +767,14 @@ function showProfilePicker(project, x, y) {
 
   const handleOutsideClick = (event) => {
     if (!menu.contains(event.target)) {
-      root.replaceChildren();
+      closeContextMenu(root);
       window.removeEventListener("mousedown", handleOutsideClick);
       window.removeEventListener("keydown", handleEscape);
     }
   };
   const handleEscape = (event) => {
     if (event.key === "Escape") {
-      root.replaceChildren();
+      closeContextMenu(root);
       window.removeEventListener("mousedown", handleOutsideClick);
       window.removeEventListener("keydown", handleEscape);
     }
@@ -674,12 +842,14 @@ function showDependencySelectionModal(project, version, profileId, dependencies)
 
       const chosenVersion = dependency.version || await fetchLatestCompatibleVersion(dependency.projectId, profileId);
       if (chosenVersion) {
-        addMod(profileId, mapProjectVersionToMod(dependency.project, chosenVersion, []));
+        const savedDependency = addMod(profileId, mapProjectVersionToMod(dependency.project, chosenVersion, [], "modrinth"));
+        showItemCompatibilityWarnings(savedDependency, profileId);
         dependencyIds.push(dependency.projectId);
       }
     }
 
-    addMod(profileId, mapProjectVersionToMod(project, version, dependencyIds));
+    const savedItem = addMod(profileId, mapProjectVersionToMod(project, version, dependencyIds, "modrinth"));
+    showItemCompatibilityWarnings(savedItem, profileId);
     setActiveProfile(profileId);
     setActiveView("home");
     closeSearchOverlays();
@@ -699,31 +869,37 @@ function showDependencySelectionModal(project, version, profileId, dependencies)
  * @param {string} profileId - Profile identifier.
  * @param {"resourcepack"|"shader"} projectType - Non-mod project type.
  */
-function persistNonModProject(project, version, profileId, projectType) {
+function persistNonModProject(project, version, profileId, projectType, source = AppState.searchSource || "modrinth") {
   const primaryFile = Array.isArray(version?.files)
     ? version.files.find((file) => file.primary) || version.files[0]
     : null;
+  const projectId = resolveProjectId(project);
   const payload = {
-    id: project.project_id || project.id,
+    id: projectId,
+    projectId,
+    projectType,
+    slug: project.slug || projectId,
     name: project.title || project.name || "Unknown item",
     version: version?.version_number || "",
+    versionNumber: version?.version_number || "",
     versionId: version?.id || "",
     description: project.description || "",
     author: project.author || "Unknown author",
+    fileUrl: primaryFile?.url || "",
     downloadUrl: primaryFile?.url || "",
-    modrinthUrl: `https://modrinth.com/${projectType}/${project.slug || project.project_id || project.id}`,
+    modrinthId: projectId,
+    modrinthUrl: buildProjectUrl(source, projectType, project.slug || projectId, projectId),
     iconUrl: project.icon_url || "",
-    source: "modrinth",
+    source,
     starred: false,
     notes: "",
     addedAt: Date.now(),
   };
 
   if (projectType === "resourcepack") {
-    addResourcePack(profileId, payload);
-  } else {
-    addShader(profileId, payload);
+    return addResourcePack(profileId, payload);
   }
+  return addShader(profileId, payload);
 }
 
 /**
@@ -848,23 +1024,29 @@ function createFilterSelect(labelText, id, options, value, onChange) {
   /**
    * Closes the custom filter menu and cleans up listeners.
    */
-  function closeMenu() {
-    if (!isOpen) {
-      return;
-    }
+    function closeMenu() {
+      if (!isOpen) {
+        return;
+      }
 
-    isOpen = false;
-    select.classList.remove("is-open");
-    trigger.setAttribute("aria-expanded", "false");
-    if (handleOutsideClick) {
-      window.removeEventListener("mousedown", handleOutsideClick);
-      handleOutsideClick = null;
+      isOpen = false;
+      select.classList.remove("is-open");
+      select.classList.add("is-closing");
+      menu.classList.add("closing");
+      trigger.setAttribute("aria-expanded", "false");
+      if (handleOutsideClick) {
+        window.removeEventListener("mousedown", handleOutsideClick);
+        handleOutsideClick = null;
+      }
+      if (handleEscape) {
+        window.removeEventListener("keydown", handleEscape);
+        handleEscape = null;
+      }
+      window.setTimeout(() => {
+        select.classList.remove("is-closing");
+        menu.classList.remove("closing");
+      }, 100);
     }
-    if (handleEscape) {
-      window.removeEventListener("keydown", handleEscape);
-      handleEscape = null;
-    }
-  }
 
   /**
    * Opens the custom filter menu.
@@ -876,6 +1058,8 @@ function createFilterSelect(labelText, id, options, value, onChange) {
     }
 
     isOpen = true;
+    select.classList.remove("is-closing");
+    menu.classList.remove("closing");
     select.classList.add("is-open");
     trigger.setAttribute("aria-expanded", "true");
     handleOutsideClick = (event) => {
@@ -1112,8 +1296,46 @@ function closeSearchOverlays() {
     }
   }
   if (contextRoot) {
-    contextRoot.replaceChildren();
+    closeContextMenu(contextRoot);
   }
+}
+
+/**
+ * Closes the active context menu with a short exit animation.
+ *
+ * @param {HTMLElement|null} root - Context-menu root.
+ * @param {() => void} [onClosed] - Optional callback after removal.
+ */
+function closeContextMenu(root, onClosed) {
+  if (!(root instanceof HTMLElement)) {
+    if (typeof onClosed === "function") {
+      onClosed();
+    }
+    return;
+  }
+
+  const menu = root.querySelector(".context-menu");
+  if (!(menu instanceof HTMLElement)) {
+    root.replaceChildren();
+    if (typeof onClosed === "function") {
+      onClosed();
+    }
+    return;
+  }
+
+  if (menu.classList.contains("closing")) {
+    return;
+  }
+
+  menu.classList.add("closing");
+  window.setTimeout(() => {
+    if (menu.parentElement === root) {
+      root.replaceChildren();
+    }
+    if (typeof onClosed === "function") {
+      onClosed();
+    }
+  }, 100);
 }
 
 /**
@@ -1282,13 +1504,17 @@ function resolveAddButtonLabel() {
  * @param {Array<string>} dependencyIds - Required dependency ids.
  * @returns {object} Storage-ready mod record.
  */
-function mapProjectVersionToMod(project, version, dependencyIds) {
+function mapProjectVersionToMod(project, version, dependencyIds, source = AppState.searchSource || "modrinth") {
   const primaryFile = Array.isArray(version?.files)
     ? version.files.find((file) => file.primary) || version.files[0]
     : null;
+  const projectId = resolveProjectId(project);
 
   return {
-    id: project.project_id || project.id,
+    id: projectId,
+    projectId,
+    projectType: "mod",
+    slug: project.slug || projectId,
     name: project.title || project.name || "Unknown mod",
     description: project.description || "",
     author: project.author || "Unknown author",
@@ -1296,15 +1522,86 @@ function mapProjectVersionToMod(project, version, dependencyIds) {
     versionNumber: version.version_number || "Unknown",
     mcVersions: Array.isArray(version.game_versions) ? version.game_versions : [],
     loaders: Array.isArray(version.loaders) ? version.loaders : [],
+    fileUrl: primaryFile?.url || "",
     downloadUrl: primaryFile?.url || "",
-    modrinthUrl: `https://modrinth.com/mod/${project.slug || project.project_id || project.id}`,
+    modrinthId: projectId,
+    modrinthUrl: buildProjectUrl(source, "mod", project.slug || projectId, projectId),
     iconUrl: project.icon_url || "",
-    source: "modrinth",
+    source,
     starred: false,
     notes: "",
     dependencies: dependencyIds,
     addedAt: Date.now(),
   };
+}
+
+/**
+ * Resolves a shared project id from any project payload.
+ *
+ * @param {object} project - Project payload.
+ * @returns {string} Project id.
+ */
+function resolveProjectId(project) {
+  return String(project?.project_id || project?.id || "");
+}
+
+/**
+ * Builds the public project URL for the active source.
+ *
+ * @param {"modrinth"|"curseforge"} source - Project source.
+ * @param {"mod"|"resourcepack"|"shader"} projectType - Project type.
+ * @param {string} slug - Project slug.
+ * @param {string} projectId - Project id fallback.
+ * @returns {string} Public project URL.
+ */
+function buildProjectUrl(source, projectType, slug, projectId) {
+  if (source === "curseforge") {
+    const segment = projectType === "resourcepack"
+      ? "texture-packs"
+      : projectType === "shader"
+        ? "shaders"
+        : "mc-mods";
+    return `https://www.curseforge.com/minecraft/${segment}/${slug || projectId}`;
+  }
+
+  return `https://modrinth.com/${projectType}/${slug || projectId}`;
+}
+
+/**
+ * Shows compatibility warnings for a newly added item.
+ *
+ * @param {object|null} item - Saved item.
+ * @param {string} profileId - Owning profile id.
+ */
+function showItemCompatibilityWarnings(item, profileId) {
+  if (!item) {
+    return;
+  }
+
+  const profile = AppState.data?.profiles.find((entry) => entry.id === profileId);
+  if (!profile) {
+    return;
+  }
+
+  if (typeof showCompatibilityWarnings === "function") {
+    showCompatibilityWarnings(item, profile);
+    return;
+  }
+
+  if (typeof checkItemCompatibility === "function" && typeof namespace.showToast === "function") {
+    checkItemCompatibility(item, profile).forEach((warning) => {
+      namespace.showToast(warning.message, "warning");
+    });
+  }
+}
+
+/**
+ * Returns the active source label for titles and loading states.
+ *
+ * @returns {string} Active source label.
+ */
+function resolveActiveSourceLabel() {
+  return AppState.searchSource === "curseforge" ? "CurseForge" : "Modrinth";
 }
 
 /**
