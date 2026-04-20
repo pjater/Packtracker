@@ -1,4 +1,4 @@
-﻿(function attachModListModule() {
+(function attachModListModule() {
   const namespace = window.PackTracker;
   const {
     AppState,
@@ -19,16 +19,21 @@
     updateMod,
     updateResourcePack,
     updateShader,
+    generateShareLink,
     getDependencies,
     getProject,
     getVersion,
     getProjectVersions,
+    cfGetProject,
+    cfGetVersion,
+    cfGetProjectVersions,
     initScanner,
     downloadFile,
   } = namespace;
   const HOME_VIEW_ID = "view-home";
   const MODAL_ROOT_ID = "modal-root";
   const CONTEXT_ROOT_ID = "context-menu-root";
+  const TOOLTIP_ROOT_ID = "tooltip-root";
   const UPDATE_TARGET_VERSION_PRESETS = ["1.21.6", "1.21.5", "1.21.4", "1.21.1", "1.20.6", "1.20.4"];
   const DOWNLOAD_ROW_STATES = {
     QUEUED: "queued",
@@ -49,6 +54,17 @@
     { key: "resourcepacks", label: "Resource Packs", projectType: "resourcepack" },
     { key: "shaders", label: "Shaders", projectType: "shader" },
   ];
+  const RELEASE_TYPE_LABELS = {
+    release: "Release",
+    beta: "Beta",
+    alpha: "Alpha",
+  };
+  const layoutEditState = {
+    mods: false,
+    resourcepacks: false,
+    shaders: false,
+  };
+  let activeListDragHandle = null;
   let downloadSession = null;
   let updateSession = null;
 
@@ -56,6 +72,11 @@
  * Renders the full profile view for the currently active profile.
  */
 function renderProfileView() {
+  if (activeListDragHandle) {
+    activeListDragHandle.destroy();
+    activeListDragHandle = null;
+  }
+
   const root = document.getElementById(HOME_VIEW_ID);
   const profile = getActiveProfile();
   if (!root) {
@@ -107,11 +128,30 @@ function renderProfileView() {
   headerRow.appendChild(heading);
 
   if (!isFavoritesProfileId(AppState.activeProfileId)) {
+    const headerActions = document.createElement("div");
+    headerActions.className = "profile-header-actions";
+
+    const shareButton = createButton("Share profile");
+    shareButton.addEventListener("click", async () => {
+      try {
+        const shareLink = generateShareLink(profile.id);
+        await navigator.clipboard.writeText(shareLink);
+        if (typeof namespace.showToast === "function") {
+          namespace.showToast("Share link copied!", "success");
+        }
+      } catch (error) {
+        if (typeof namespace.showToast === "function") {
+          namespace.showToast("Could not copy share link", "danger");
+        }
+      }
+    });
+
     const scanButton = createButton("Scan Minecraft Folder");
     scanButton.addEventListener("click", () => {
       initScanner(profile.id);
     });
-    headerRow.appendChild(scanButton);
+    headerActions.append(shareButton, scanButton);
+    headerRow.appendChild(headerActions);
   }
 
   header.appendChild(headerRow);
@@ -129,7 +169,15 @@ function renderProfileView() {
     tabBar.appendChild(tab);
   });
 
-  root.append(header, tabBar, renderTabContent(AppState.activeTab));
+  const content = renderTabContent(AppState.activeTab);
+  const existingContent = root.querySelector(".content-panel, .tab-panel");
+  if (existingContent instanceof HTMLElement) {
+    root.replaceChildren(header, tabBar, existingContent);
+  } else {
+    root.replaceChildren(header, tabBar);
+  }
+  switchTabContent(root, content, existingContent instanceof HTMLElement ? existingContent : null);
+  queueTabIndicatorUpdate(tabBar);
 }
 
 /**
@@ -139,9 +187,14 @@ function renderProfileView() {
  * @returns {HTMLDivElement} Tab content element.
  */
 function renderTabContent(tab) {
+  if (activeListDragHandle) {
+    activeListDragHandle.destroy();
+    activeListDragHandle = null;
+  }
+
   const profile = getActiveProfile();
   const container = document.createElement("div");
-  container.className = "tab-content tab-panel";
+  container.className = "tab-content tab-panel content-panel";
 
   if (!profile) {
     return container;
@@ -161,6 +214,7 @@ function renderTabContent(tab) {
 
   const buttons = document.createElement("div");
   buttons.className = "profile-toolbar";
+  const isEditing = layoutEditState[tab];
 
   if (!isFavoritesView) {
     const searchButton = createButton("+ Add via Browse", "btn-accent");
@@ -191,9 +245,13 @@ function renderTabContent(tab) {
     downloadButton.addEventListener("click", async () => {
       downloadButton.disabled = true;
       const originalLabel = downloadButton.textContent;
-      downloadButton.textContent = "Downloading...";
+      downloadButton.textContent = "Bundling...";
       try {
         await beginDownloadFlow(profile.id, tab);
+      } catch (error) {
+        if (typeof namespace.showToast === "function") {
+          namespace.showToast(error instanceof Error ? error.message : "ZIP download failed", "danger");
+        }
       } finally {
         downloadButton.disabled = false;
         downloadButton.textContent = originalLabel;
@@ -201,6 +259,36 @@ function renderTabContent(tab) {
     });
 
     buttons.append(searchButton, manualButton, updateButton, downloadButton, createViewToggle(tab));
+
+    const editLayoutButton = document.createElement("button");
+    editLayoutButton.type = "button";
+    editLayoutButton.className = isEditing
+      ? "btn btn-primary btn-small"
+      : "btn btn-small";
+    editLayoutButton.textContent = isEditing ? "\u2713 Done editing" : "\u270E Edit layout";
+    editLayoutButton.addEventListener("click", () => {
+      layoutEditState[tab] = !layoutEditState[tab];
+      const root = document.getElementById(HOME_VIEW_ID);
+      if (root) {
+        const newContent = renderTabContent(tab);
+        const old = root.querySelector(".content-panel");
+        if (old) {
+          old.replaceWith(newContent);
+        } else {
+          root.appendChild(newContent);
+        }
+      }
+    });
+    buttons.appendChild(editLayoutButton);
+
+    if (isEditing) {
+      buttons.querySelectorAll("button").forEach((button) => {
+        if (button !== editLayoutButton) {
+          button.disabled = true;
+          button.classList.add("is-layout-disabled");
+        }
+      });
+    }
   } else {
     buttons.append(createViewToggle(tab));
   }
@@ -216,16 +304,105 @@ function renderTabContent(tab) {
   const list = document.createElement("div");
   list.className = getViewMode(tab) === "grid" ? "list-stack is-grid" : "list-stack";
 
-  items.forEach((item) => {
-    if (tab === "mods") {
-      list.appendChild(renderModCard(item, profile.id));
-    } else {
-      list.appendChild(renderPackCard(item, profile.id, definition.projectType));
+  items.forEach((item, index) => {
+    const card = tab === "mods"
+      ? renderModCard(item, profile.id, isEditing)
+      : renderPackCard(item, profile.id, definition.projectType, isEditing);
+    card.style.animationDelay = `${Math.min(index * 30, 300)}ms`;
+    if (isEditing) {
+      card.setAttribute("data-drag-item", "");
+      card.classList.add("is-reorder-mode");
     }
+    list.appendChild(card);
   });
 
   container.appendChild(list);
+  if (layoutEditState[tab] && typeof namespace.enableDragOrder === "function") {
+    activeListDragHandle = namespace.enableDragOrder(list, (fromIndex, toIndex) => {
+      const activeProfile = namespace.getActiveProfile?.();
+      if (!activeProfile) {
+        return;
+      }
+
+      let itemsArray;
+      if (tab === "mods") {
+        itemsArray = activeProfile.mods;
+      } else if (tab === "resourcepacks") {
+        itemsArray = activeProfile.resourcePacks;
+      } else {
+        itemsArray = activeProfile.shaders;
+      }
+
+      if (!Array.isArray(itemsArray)) {
+        return;
+      }
+
+      const moved = itemsArray.splice(fromIndex, 1)[0];
+      if (!moved) {
+        return;
+      }
+      itemsArray.splice(toIndex, 0, moved);
+
+      if (typeof saveData === "function") {
+        AppState.data = saveData(AppState.data);
+      }
+    });
+  }
   return container;
+}
+
+/**
+ * Animates tab panel replacement without changing the surrounding layout.
+ *
+ * @param {HTMLElement} root - Home view root.
+ * @param {HTMLElement} nextContent - Newly rendered content panel.
+ * @param {HTMLElement|null} existingContent - Previous content panel.
+ */
+function switchTabContent(root, nextContent, existingContent) {
+  if (!existingContent || !existingContent.parentElement) {
+    root.appendChild(nextContent);
+    return;
+  }
+
+  existingContent.classList.add("leaving");
+  root.appendChild(existingContent);
+  window.setTimeout(() => {
+    if (existingContent.parentElement === root) {
+      existingContent.replaceWith(nextContent);
+    } else if (!nextContent.parentElement) {
+      root.appendChild(nextContent);
+    }
+  }, 110);
+}
+
+/**
+ * Schedules a tab-indicator update after layout has settled.
+ *
+ * @param {HTMLElement} tabBarElement - Tab bar wrapper.
+ */
+function queueTabIndicatorUpdate(tabBarElement) {
+  window.requestAnimationFrame(() => {
+    updateTabIndicator(tabBarElement);
+  });
+}
+
+/**
+ * Aligns the sliding underline with the currently active tab.
+ *
+ * @param {HTMLElement} tabBarElement - Tab bar wrapper.
+ */
+function updateTabIndicator(tabBarElement) {
+  if (!(tabBarElement instanceof HTMLElement)) {
+    return;
+  }
+
+  const activeTab = tabBarElement.querySelector(".tab.active");
+  if (!(activeTab instanceof HTMLElement)) {
+    return;
+  }
+
+  tabBarElement.style.setProperty("--indicator-left", `${activeTab.offsetLeft}px`);
+  tabBarElement.style.setProperty("--indicator-width", `${activeTab.offsetWidth}px`);
 }
 
 /**
@@ -233,15 +410,25 @@ function renderTabContent(tab) {
  *
  * @param {object} mod - Mod entry.
  * @param {string} profileId - Profile identifier.
+ * @param {boolean} isEditing - Whether layout editing is active.
  * @returns {HTMLDivElement} Mod card.
  */
-function renderModCard(mod, profileId) {
+function renderModCard(mod, profileId, isEditing = false) {
   const sourceProfileId = mod.sourceProfileId || profileId;
   const profile = AppState.data?.profiles.find((entry) => entry.id === sourceProfileId);
-  const compatibility = checkCompatibility(mod, profile);
+  const warnings = checkItemCompatibility(mod, profile);
+  const hasErrors = warnings.some((warning) => warning.level === "error");
   const missingDependencies = getMissingDependencies(mod, profile);
   const card = document.createElement("div");
-  card.className = compatibility.compatible ? "mod-card" : "mod-card is-incompatible";
+  card.className = hasErrors ? "mod-card is-incompatible" : "mod-card";
+
+  if (isEditing) {
+    const handle = document.createElement("span");
+    handle.className = "drag-handle";
+    handle.textContent = "\u283F";
+    handle.setAttribute("aria-hidden", "true");
+    card.prepend(handle);
+  }
 
   card.appendChild(createIconNode(mod.name, mod.iconUrl, 48));
 
@@ -265,10 +452,11 @@ function renderModCard(mod, profileId) {
   author.className = "mod-author";
   author.textContent = `by ${mod.author || "Unknown author"}`;
 
-  headingLine.append(name, author);
+  headingLine.append(name, createWarningIcon(warnings), author);
 
   const badges = document.createElement("div");
   badges.className = "mod-badges";
+  badges.appendChild(createBadge("badge-source", resolveSourceLabel(mod.source)));
   if (mod.versionNumber || mod.version) {
     badges.appendChild(createBadge("badge-version", mod.versionNumber || mod.version));
   }
@@ -278,10 +466,10 @@ function renderModCard(mod, profileId) {
   if (Array.isArray(mod.mcVersions) && mod.mcVersions.length > 0) {
     badges.appendChild(createBadge("badge-version", mod.mcVersions[0]));
   }
-  if (!compatibility.compatible && compatibility.warning) {
+  if (hasErrors) {
     const warning = createBadge("badge-danger", "Incompatible");
     warning.classList.add("warning-indicator");
-    warning.title = compatibility.warning;
+    attachTooltip(warning, warnings.map((entry) => entry.message).join("\n"));
     badges.appendChild(warning);
   }
 
@@ -304,7 +492,7 @@ function renderModCard(mod, profileId) {
   meta.className = "mod-meta";
   meta.textContent = buildMetaLine([
     mod.sourceProfileName ? `From ${mod.sourceProfileName}` : "",
-    mod.source === "manual" ? "Manual" : "Modrinth",
+    resolveSourceLabel(mod.source),
     `Added ${formatRelativeDate(mod.addedAt)}`,
   ]);
 
@@ -314,8 +502,21 @@ function renderModCard(mod, profileId) {
   const links = document.createElement("div");
   links.className = "mod-card-links";
 
-  const sourceButton = createButton(mod.source === "manual" ? "Manual" : "Modrinth");
-  if (mod.modrinthUrl) {
+  const fileLink = mod.fileUrl || mod.downloadUrl || "";
+  const isManual = mod.source === "manual";
+  const sourceLabel = isManual ? "Manual" : resolveSourceLabel(mod.source || "modrinth");
+  const sourceButton = createButton(sourceLabel);
+  sourceButton.classList.add("btn-small");
+
+  if (isManual) {
+    if (fileLink) {
+      sourceButton.addEventListener("click", () => {
+        window.open(fileLink, "_blank", "noopener");
+      });
+    } else {
+      sourceButton.disabled = true;
+    }
+  } else if (mod.modrinthUrl) {
     sourceButton.addEventListener("click", () => {
       window.open(mod.modrinthUrl, "_blank", "noopener");
     });
@@ -323,13 +524,7 @@ function renderModCard(mod, profileId) {
     sourceButton.disabled = true;
   }
 
-  const notesButton = createButton(mod.notes ? "Edit note" : "Note");
-  notesButton.classList.add("btn-small");
-  notesButton.addEventListener("click", () => {
-    showModNotesModal(sourceProfileId, mod.id);
-  });
-
-  links.append(sourceButton, notesButton);
+  links.append(sourceButton, createChangeVersionButton(mod, sourceProfileId, "mod"));
 
   const actions = document.createElement("div");
   actions.className = "mod-actions";
@@ -361,6 +556,12 @@ function renderModCard(mod, profileId) {
   titleRow.append(titleStack);
   info.appendChild(titleRow);
   card.appendChild(info);
+  if (isEditing) {
+    card.querySelectorAll("button").forEach((button) => {
+      button.disabled = true;
+      button.classList.add("is-layout-disabled");
+    });
+  }
   return card;
 }
 
@@ -370,12 +571,24 @@ function renderModCard(mod, profileId) {
  * @param {object} item - Resource pack or shader item.
  * @param {string} profileId - Profile identifier.
  * @param {"resourcepack"|"shader"} type - Pack type.
+ * @param {boolean} isEditing - Whether layout editing is active.
  * @returns {HTMLDivElement} Pack card.
  */
-function renderPackCard(item, profileId, type) {
+function renderPackCard(item, profileId, type, isEditing = false) {
   const sourceProfileId = item.sourceProfileId || profileId;
+  const profile = AppState.data?.profiles.find((entry) => entry.id === sourceProfileId);
+  const warnings = checkItemCompatibility(item, profile);
+  const hasErrors = warnings.some((warning) => warning.level === "error");
   const card = document.createElement("div");
-  card.className = "mod-card";
+  card.className = hasErrors ? "mod-card is-incompatible" : "mod-card";
+
+  if (isEditing) {
+    const handle = document.createElement("span");
+    handle.className = "drag-handle";
+    handle.textContent = "\u283F";
+    handle.setAttribute("aria-hidden", "true");
+    card.prepend(handle);
+  }
 
   if (item.source === "manual") {
     const placeholder = document.createElement("div");
@@ -406,13 +619,19 @@ function renderPackCard(item, profileId, type) {
   author.className = "mod-author";
   author.textContent = `by ${item.author || "Unknown author"}`;
 
-  headingLine.append(name, author);
+  headingLine.append(name, createWarningIcon(warnings), author);
 
   const badges = document.createElement("div");
   badges.className = "item-badges";
-  badges.appendChild(createBadge("badge-source", item.source === "manual" ? "Manual" : "Modrinth"));
-  if (item.version) {
-    badges.appendChild(createBadge("badge-version", item.version));
+  badges.appendChild(createBadge("badge-source", resolveSourceLabel(item.source)));
+  if (item.version || item.versionNumber) {
+    badges.appendChild(createBadge("badge-version", item.version || item.versionNumber));
+  }
+  if (hasErrors) {
+    const warning = createBadge("badge-danger", "Warning");
+    warning.classList.add("warning-indicator");
+    attachTooltip(warning, warnings.map((entry) => entry.message).join("\n"));
+    badges.appendChild(warning);
   }
 
   const description = document.createElement("div");
@@ -433,8 +652,21 @@ function renderPackCard(item, profileId, type) {
   const links = document.createElement("div");
   links.className = "mod-card-links";
 
-  const sourceButton = createButton(item.source === "manual" ? "Manual" : "Modrinth");
-  if (item.modrinthUrl) {
+  const fileLink = item.fileUrl || item.downloadUrl || "";
+  const isManual = item.source === "manual";
+  const sourceLabel = isManual ? "Manual" : resolveSourceLabel(item.source || "modrinth");
+  const sourceButton = createButton(sourceLabel);
+  sourceButton.classList.add("btn-small");
+
+  if (isManual) {
+    if (fileLink) {
+      sourceButton.addEventListener("click", () => {
+        window.open(fileLink, "_blank", "noopener");
+      });
+    } else {
+      sourceButton.disabled = true;
+    }
+  } else if (item.modrinthUrl) {
     sourceButton.addEventListener("click", () => {
       window.open(item.modrinthUrl, "_blank", "noopener");
     });
@@ -442,13 +674,7 @@ function renderPackCard(item, profileId, type) {
     sourceButton.disabled = true;
   }
 
-  const notesButton = createButton(item.notes ? "Edit note" : "Note");
-  notesButton.classList.add("btn-small");
-  notesButton.addEventListener("click", () => {
-    showItemNotesModal(sourceProfileId, item.id, type);
-  });
-
-  links.append(sourceButton, notesButton);
+  links.append(sourceButton, createChangeVersionButton(item, sourceProfileId, type));
 
   const actions = document.createElement("div");
   actions.className = "mod-actions";
@@ -484,29 +710,92 @@ function renderPackCard(item, profileId, type) {
   titleRow.append(titleStack);
   info.appendChild(titleRow);
   card.appendChild(info);
+  if (isEditing) {
+    card.querySelectorAll("button").forEach((button) => {
+      button.disabled = true;
+      button.classList.add("is-layout-disabled");
+    });
+  }
   return card;
 }
 
 /**
- * Checks whether a mod's declared loaders fit the selected profile loader.
+ * Collects non-blocking compatibility warnings for one stored item.
  *
- * @param {object} mod - Mod entry.
- * @param {object|null} profile - Active profile.
- * @returns {{compatible:boolean, warning:string|null}} Compatibility result.
+ * @param {object} item - Stored item.
+ * @param {object|null} profile - Owning profile.
+ * @returns {Array<{level:"warning"|"error", message:string}>} Active warnings.
  */
-function checkCompatibility(mod, profile) {
-  if (!profile || !Array.isArray(mod?.loaders) || mod.loaders.length === 0) {
-    return { compatible: true, warning: null };
+function checkItemCompatibility(item, profile) {
+  if (!item || !profile) {
+    return [];
   }
 
-  const compatible = mod.loaders.includes(profile.loader);
-  if (compatible) {
-    return { compatible: true, warning: null };
+  const warnings = [];
+  const itemLoaders = Array.isArray(item.loaders)
+    ? item.loaders.map((loader) => String(loader || "").toLowerCase()).filter(Boolean)
+    : [];
+  const itemVersions = Array.isArray(item.mcVersions)
+    ? item.mcVersions.map((version) => String(version || "")).filter(Boolean)
+    : [];
+  const profileLoader = String(profile.loader || "").toLowerCase();
+  const profileVersion = String(profile.mcVersion || "").trim();
+
+  if (profileLoader === "fabric" && itemLoaders.some((loader) => loader === "forge" || loader === "neoforge")) {
+    warnings.push({
+      level: "error",
+      message: "This mod requires Forge/NeoForge but your profile uses Fabric.",
+    });
   }
 
+  if ((profileLoader === "forge" || profileLoader === "neoforge") && itemLoaders.some((loader) => loader === "fabric" || loader === "quilt")) {
+    warnings.push({
+      level: "error",
+      message: "This mod requires Fabric/Quilt but your profile uses Forge/NeoForge.",
+    });
+  }
+
+  if (profileVersion && itemVersions.length > 0 && !itemVersions.includes(profileVersion)) {
+    warnings.push({
+      level: "warning",
+      message: `Version ${item.versionNumber || item.version || "Unknown"} may not be compatible with Minecraft ${profileVersion}.`,
+    });
+  }
+
+  if (item.source === "curseforge" && item.slug) {
+    const projectType = item.projectType || inferProjectTypeFromItem(item);
+    const siblingCollections = resolveProfileCollectionsForProjectType(profile, projectType);
+    const hasModrinthDuplicate = siblingCollections.some((entry) => (
+      entry !== item
+      && entry.source === "modrinth"
+      && entry.slug
+      && entry.slug === item.slug
+    ));
+
+    if (hasModrinthDuplicate) {
+      warnings.push({
+        level: "warning",
+        message: "A version of this mod is already tracked from Modrinth.",
+      });
+    }
+  }
+
+  return warnings;
+}
+
+/**
+ * Keeps the legacy compatibility helper available for existing callers.
+ *
+ * @param {object} item - Stored item.
+ * @param {object|null} profile - Active profile.
+ * @returns {{compatible:boolean, warning:string|null}} Legacy compatibility shape.
+ */
+function checkCompatibility(item, profile) {
+  const warnings = checkItemCompatibility(item, profile);
+  const primary = warnings[0] || null;
   return {
-    compatible: false,
-    warning: `${mod.name} targets ${mod.loaders.join(", ")} instead of ${profile.loader}.`,
+    compatible: warnings.every((entry) => entry.level !== "error"),
+    warning: primary ? primary.message : null,
   };
 }
 
@@ -524,6 +813,230 @@ function getMissingDependencies(mod, profile) {
 
   const installedIds = new Set(profile.mods.map((entry) => entry.id));
   return mod.dependencies.filter((dependencyId) => !installedIds.has(dependencyId));
+}
+
+/**
+ * Creates a compact warning icon that uses the shared tooltip root on hover.
+ *
+ * @param {Array<{level:"warning"|"error", message:string}>} warnings - Active warnings.
+ * @returns {HTMLElement} Warning icon node or placeholder.
+ */
+function createWarningIcon(warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) {
+    return document.createTextNode("");
+  }
+
+  const icon = document.createElement("span");
+  icon.className = warnings.some((entry) => entry.level === "error")
+    ? "item-warning-icon is-error"
+    : "item-warning-icon";
+  icon.textContent = "⚠";
+  attachTooltip(icon, warnings.map((entry) => entry.message).join("\n"));
+  return icon;
+}
+
+/**
+ * Creates the subtle version-change action used on item cards.
+ *
+ * @param {object} item - Stored item.
+ * @param {string} profileId - Owning profile id.
+ * @param {"mod"|"resourcepack"|"shader"} type - Item type.
+ * @returns {HTMLButtonElement} Version action button.
+ */
+function createChangeVersionButton(item, profileId, type) {
+  const button = createButton(item.versionNumber || item.version ? "Change version" : "Pick version");
+  button.classList.add("btn-small", "version-action-btn");
+  if (item.source === "manual") {
+    button.disabled = true;
+    return button;
+  }
+
+  button.addEventListener("click", () => {
+    void openVersionPickerModal(
+      resolveProjectId(item),
+      item.versionId || "",
+      item.source || "modrinth",
+      async (version) => {
+        await updateTrackedItemVersion(profileId, item, type, version);
+      },
+      {
+        profileId,
+        projectType: type === "mod" ? "mod" : type,
+        projectName: item.name,
+        mode: "update",
+        confirmLabel: "Update to selected",
+      }
+    );
+  });
+  return button;
+}
+
+/**
+ * Opens the shared version picker used by browse-add and in-profile updates.
+ *
+ * @param {string} projectId - Project identifier.
+ * @param {string} currentVersionId - Currently selected version id.
+ * @param {"modrinth"|"curseforge"} source - Item source.
+ * @param {(version:object) => Promise<unknown>|unknown} onConfirm - Confirm callback.
+ * @param {{profileId?:string, projectType?:string, projectName?:string, mode?:"add"|"update", confirmLabel?:string}} [options] - Modal options.
+ */
+async function openVersionPickerModal(projectId, currentVersionId, source, onConfirm, options = {}) {
+  const safeProjectId = String(projectId || "");
+  const profile = AppState.data?.profiles.find((entry) => entry.id === options.profileId);
+  if (!safeProjectId || !profile) {
+    return;
+  }
+
+  const projectType = options.projectType || "mod";
+  const versionFilters = {
+    loader: projectType === "mod" && profile.loader !== "vanilla" ? profile.loader : "",
+    gameVersion: profile.mcVersion,
+  };
+  let versions = await getVersionsForSource(source, safeProjectId, versionFilters);
+  if (versions.error || !Array.isArray(versions) || versions.length === 0) {
+    versions = await getVersionsForSource(source, safeProjectId);
+  }
+  if (versions.error || !Array.isArray(versions) || versions.length === 0) {
+    showTransientModal("No versions available", `${resolveSourceLabel(source)} did not return any installable versions for this project.`);
+    return;
+  }
+
+  const sortedVersions = sortVersionsNewestFirst(versions);
+  const overlay = createModalOverlay();
+  const modal = createModalCard();
+  modal.classList.add("modal-wide");
+
+  const recommendedVersion = findRecommendedVersion(sortedVersions, profile, projectType);
+  let selectedVersionId = currentVersionId
+    && sortedVersions.some((version) => version.id === currentVersionId)
+    ? currentVersionId
+    : (recommendedVersion?.id || sortedVersions[0].id);
+
+  const title = createModalTitle(
+    options.mode === "update"
+      ? `Change version for ${options.projectName || "this item"}`
+      : `Add ${options.projectName || "this item"} to ${profile.name}`
+  );
+  const subtitle = createModalSubtitle(
+    `Choose a ${resolveSourceLabel(source)} version for ${profile.loader === "vanilla" ? "Minecraft" : capitalize(profile.loader)} ${profile.mcVersion || "any version"}.`
+  );
+
+  const list = document.createElement("div");
+  list.className = "version-list";
+
+  sortedVersions.forEach((version) => {
+    const row = document.createElement("label");
+    row.className = "version-item";
+    if (recommendedVersion?.id === version.id) {
+      row.classList.add("is-recommended");
+    }
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = `version-select-${safeProjectId}`;
+    radio.checked = version.id === selectedVersionId;
+    radio.addEventListener("change", () => {
+      selectedVersionId = version.id;
+    });
+
+    const text = document.createElement("div");
+    text.className = "version-item-label";
+
+    const topLine = document.createElement("div");
+    topLine.className = "version-row-top";
+
+    const name = document.createElement("div");
+    name.className = "version-name";
+    name.textContent = version.version_number || "Unknown version";
+
+    const badges = document.createElement("div");
+    badges.className = "version-row-badges";
+    badges.appendChild(createReleaseTypeBadge(version.release_type));
+    if (recommendedVersion?.id === version.id) {
+      badges.appendChild(createBadge("badge-source", "Recommended"));
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "version-meta";
+    meta.textContent = buildMetaLine([
+      formatLoaderList(version.loaders),
+      formatVersionList(version.game_versions),
+      `released ${formatRelativeDate(new Date(version.date_published || 0).getTime())}`,
+    ]);
+
+    topLine.append(name, badges);
+    text.append(topLine, meta);
+    row.append(radio, text);
+    list.appendChild(row);
+  });
+
+  const actions = createActionRow();
+  const cancelButton = createButton("Cancel");
+  const confirmButton = createButton(
+    options.confirmLabel || (options.mode === "update" ? "Update to selected" : "Add selected version"),
+    "btn-accent"
+  );
+  cancelButton.addEventListener("click", closeOverlays);
+  confirmButton.addEventListener("click", async () => {
+    const selectedVersion = sortedVersions.find((version) => version.id === selectedVersionId) || recommendedVersion || sortedVersions[0];
+    closeOverlays();
+    await onConfirm(selectedVersion);
+  });
+
+  actions.append(cancelButton, confirmButton);
+  modal.append(title, subtitle, list, actions);
+  overlay.appendChild(modal);
+  mountModal(overlay);
+}
+
+/**
+ * Applies a new selected version to an already tracked item and persists it.
+ *
+ * @param {string} profileId - Owning profile id.
+ * @param {object} item - Stored item.
+ * @param {"mod"|"resourcepack"|"shader"} type - Item type.
+ * @param {object} version - Selected version payload.
+ * @returns {Promise<void>} Completion promise.
+ */
+async function updateTrackedItemVersion(profileId, item, type, version) {
+  const profile = AppState.data?.profiles.find((entry) => entry.id === profileId);
+  if (!profile) {
+    return;
+  }
+
+  const patch = buildVersionPatch(item, version, type);
+  if (type === "mod") {
+    updateMod(profileId, item.id, patch);
+  } else if (type === "resourcepack") {
+    updateResourcePack(profileId, item.id, patch);
+  } else {
+    updateShader(profileId, item.id, patch);
+  }
+
+  const updatedProfile = AppState.data?.profiles.find((entry) => entry.id === profileId) || profile;
+  const updatedCollection = type === "mod"
+    ? updatedProfile.mods
+    : type === "resourcepack"
+      ? updatedProfile.resourcePacks
+      : updatedProfile.shaders;
+  const updatedItem = updatedCollection.find((entry) => entry.id === item.id);
+  showCompatibilityWarnings(updatedItem, updatedProfile);
+}
+
+/**
+ * Shows compatibility warnings as toast notifications when they exist.
+ *
+ * @param {object|undefined} item - Stored item.
+ * @param {object|undefined|null} profile - Owning profile.
+ */
+function showCompatibilityWarnings(item, profile) {
+  if (!item || !profile || typeof namespace.showToast !== "function") {
+    return;
+  }
+
+  checkItemCompatibility(item, profile).forEach((warning) => {
+    namespace.showToast(warning.message, "warning");
+  });
 }
 
 /**
@@ -648,18 +1161,24 @@ function showAddManualModal(profileId, type) {
   const cancelButton = createButton("Cancel");
   const addButton = createButton("Add", "btn-primary");
   cancelButton.addEventListener("click", closeOverlays);
-  addButton.addEventListener("click", () => {
-    const commonFields = {
-      id: `manual-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: nameGroup.input.value.trim() || `Untitled ${resolveTypeLabel(type)}`,
-      version: versionGroup.input.value.trim(),
-      versionNumber: versionGroup.input.value.trim(),
-      description: notesInput.value.trim(),
-      author: authorGroup.input.value.trim() || "Unknown",
-      downloadUrl: urlGroup.input.value.trim(),
-      modrinthUrl: "",
-      iconUrl: "",
-      source: "manual",
+    addButton.addEventListener("click", () => {
+      const manualId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const fileUrl = urlGroup.input.value.trim();
+      const commonFields = {
+        id: manualId,
+        projectId: manualId,
+        projectType: type,
+        slug: "",
+        name: nameGroup.input.value.trim() || `Untitled ${resolveTypeLabel(type)}`,
+        version: versionGroup.input.value.trim(),
+        versionNumber: versionGroup.input.value.trim(),
+        description: notesInput.value.trim(),
+        author: authorGroup.input.value.trim() || "Unknown",
+        fileUrl,
+        downloadUrl: fileUrl,
+        modrinthUrl: "",
+        iconUrl: "",
+        source: "manual",
       starred: false,
       notes: notesInput.value.trim(),
       addedAt: Date.now(),
@@ -739,10 +1258,10 @@ function createEmptyState(definition) {
   const text = document.createElement("div");
   text.className = "empty-state-text";
   text.textContent = definition.key === "mods"
-    ? "Browse Modrinth or add your first mod manually."
+    ? "Browse projects or add your first mod manually."
     : definition.key === "resourcepacks"
-      ? "Browse Modrinth or add your first resource pack manually."
-      : "Browse Modrinth or add your first shader manually.";
+      ? "Browse projects or add your first resource pack manually."
+      : "Browse projects or add your first shader manually.";
 
   const button = createButton(
     definition.key === "mods"
@@ -775,13 +1294,7 @@ function createEmptyState(definition) {
  * @returns {string} Button label.
  */
 function resolveDownloadButtonLabel(tab) {
-  if (tab === "resourcepacks") {
-    return "⤓ Download resource packs";
-  }
-  if (tab === "shaders") {
-    return "⤓ Download shaders";
-  }
-  return "⤓ Download mods";
+  return "⬇ Download as ZIP";
 }
 
 /**
@@ -799,7 +1312,7 @@ function showBulkUpdateModal(profileId, tab) {
   const overlay = createModalOverlay();
   const modal = createModalCard();
   const title = createModalTitle(`Update ${resolveTabCollectionLabel(tab)} to a Minecraft version`);
-  const subtitle = createModalSubtitle("PackTracker will try to find the newest compatible Modrinth version for every visible item. If it cannot find one, it will tell you why.");
+  const subtitle = createModalSubtitle("PackTracker will try to find the newest compatible tracked version for every visible item. If it cannot find one, it will tell you why.");
 
   const versionGroup = createTextField("Target Minecraft version");
   versionGroup.input.value = profile.mcVersion || "1.21.1";
@@ -902,7 +1415,7 @@ async function runBulkUpdateQueue(profileId, tab, targetVersion) {
     }
 
     row.status = UPDATE_ROW_STATES.CHECKING;
-    row.message = "checking Modrinth...";
+    row.message = `checking ${resolveSourceLabel(currentItem.source || "modrinth")}...`;
     renderBulkUpdateProgressModal();
 
     try {
@@ -944,22 +1457,22 @@ async function runBulkUpdateQueue(profileId, tab, targetVersion) {
  * @returns {Promise<{kind:"update", project:object, version:object, message:string}|{kind:"skip", message:string}>} Update candidate.
  */
 async function resolveBulkUpdateCandidate(item, tab, targetVersion, profile) {
-  const projectId = resolveDownloadProjectId(item);
+  const projectId = resolveProjectId(item);
   if (!projectId || item.source === "manual") {
-    return { kind: "skip", message: "Manual item or missing Modrinth link" };
+    return { kind: "skip", message: "Manual item or missing project link" };
   }
 
-  const project = await getProject(projectId);
+  const project = await getProjectForSource(item.source, projectId);
   if (project.error) {
     return { kind: "skip", message: project.message || "Could not load project" };
   }
 
-  let versions = await getProjectVersions(projectId, {
+  let versions = await getVersionsForSource(item.source, projectId, {
     loader: tab === "mods" && profile.loader !== "vanilla" ? profile.loader : "",
     gameVersion: targetVersion,
   });
   if (versions.error || versions.length === 0) {
-    versions = await getProjectVersions(projectId);
+    versions = await getVersionsForSource(item.source, projectId);
   }
   if (versions.error || versions.length === 0) {
     return { kind: "skip", message: "No versions found" };
@@ -1008,35 +1521,48 @@ function applyBulkUpdateToItem(item, project, version, tab) {
   const primaryFile = Array.isArray(version?.files)
     ? version.files.find((file) => file.primary) || version.files[0]
     : null;
+  const nextProjectId = resolveNormalizedProjectId(project, item);
+  const nextSource = item.source || "modrinth";
+  const nextProjectType = tab === "resourcepacks" ? "resourcepack" : tab === "shaders" ? "shader" : "mod";
+  const nextSlug = project?.slug || item.slug || nextProjectId;
 
   if (tab === "mods") {
     Object.assign(item, {
       version: version.version_number || item.version || "",
       versionNumber: version.version_number || item.versionNumber || "",
       versionId: version.id || item.versionId || "",
-      modrinthId: project.id || item.modrinthId || item.id,
-      downloadUrl: primaryFile?.url || item.downloadUrl || "",
-      modrinthUrl: `https://modrinth.com/mod/${project.slug || project.id}`,
+      projectId: nextProjectId,
+      modrinthId: nextProjectId,
+      slug: nextSlug,
+      projectType: nextProjectType,
+      fileUrl: primaryFile?.url || item.fileUrl || item.downloadUrl || "",
+      downloadUrl: primaryFile?.url || item.fileUrl || item.downloadUrl || "",
+      modrinthUrl: buildProjectUrl(nextSource, nextProjectType, nextSlug, nextProjectId),
       iconUrl: project.icon_url || item.iconUrl || "",
       description: project.description || item.description || "",
       author: project.author || item.author || "Unknown author",
       mcVersions: Array.isArray(version.game_versions) ? version.game_versions : item.mcVersions,
       loaders: Array.isArray(version.loaders) ? version.loaders : item.loaders,
-      source: "modrinth",
+      source: nextSource,
     });
     return;
   }
 
   Object.assign(item, {
     version: version.version_number || item.version || "",
+    versionNumber: version.version_number || item.versionNumber || "",
     versionId: version.id || item.versionId || "",
-    modrinthId: project.id || item.modrinthId || item.id,
-    downloadUrl: primaryFile?.url || item.downloadUrl || "",
-    modrinthUrl: `https://modrinth.com/${tab === "resourcepacks" ? "resourcepack" : "shader"}/${project.slug || project.id}`,
+    projectId: nextProjectId,
+    modrinthId: nextProjectId,
+    slug: nextSlug,
+    projectType: nextProjectType,
+    fileUrl: primaryFile?.url || item.fileUrl || item.downloadUrl || "",
+    downloadUrl: primaryFile?.url || item.fileUrl || item.downloadUrl || "",
+    modrinthUrl: buildProjectUrl(nextSource, nextProjectType, nextSlug, nextProjectId),
     iconUrl: project.icon_url || item.iconUrl || "",
     description: project.description || item.description || "",
     author: project.author || item.author || "Unknown author",
-    source: "modrinth",
+    source: nextSource,
   });
 }
 
@@ -1185,6 +1711,22 @@ function resolveTabCollectionLabel(tab) {
 }
 
 /**
+ * Maps one tab id to the folder name used inside ZIP bundles.
+ *
+ * @param {"mods"|"resourcepacks"|"shaders"} tab - Active tab key.
+ * @returns {string} ZIP folder name.
+ */
+function resolveZipFolderName(tab) {
+  if (tab === "resourcepacks") {
+    return "resourcepacks";
+  }
+  if (tab === "shaders") {
+    return "shaders";
+  }
+  return "mods";
+}
+
+/**
  * Starts a sequential download queue for the currently visible tab items.
  *
  * @param {string} profileId - Active profile id.
@@ -1196,33 +1738,101 @@ async function beginDownloadFlow(profileId, tab) {
     return;
   }
 
-  const items = getTabItems(profile, tab);
-  const label = tab === "resourcepacks" ? "resource packs" : tab === "shaders" ? "shaders" : "mods";
-  downloadSession = {
-    profileId,
-    tab,
-    title: `Downloading ${label} to your browser downloads folder`,
-    items: items.map((item) => ({
-      id: item.id,
-      name: item.name,
-      versionId: item.versionId || "",
-      modrinthId: item.modrinthId || item.id || "",
-      modrinthUrl: item.modrinthUrl || "",
-      downloadUrl: item.downloadUrl || item.url || "",
-      source: item.source || "manual",
-      mcVersions: Array.isArray(item.mcVersions) ? item.mcVersions : [],
-      loaders: Array.isArray(item.loaders) ? item.loaders : [],
-      fileName: "",
-      sizeLabel: "",
-      status: DOWNLOAD_ROW_STATES.QUEUED,
-      message: "queued",
-    })),
-    completed: 0,
-    running: true,
-  };
+  await downloadCategoryAsZip(getTabItems(profile, tab), resolveZipFolderName(tab), profile.name);
+}
 
-  renderDownloadProgressModal();
-  await runDownloadQueue();
+/**
+ * Downloads one category as a ZIP bundle while skipping missing/directly duplicated items.
+ *
+ * @param {Array<object>} items - Items in the active category.
+ * @param {string} categoryFolderName - Folder name inside the ZIP.
+ * @param {string} profileName - Profile label used in the ZIP filename.
+ */
+async function downloadCategoryAsZip(items, categoryFolderName, profileName) {
+  if (typeof window.JSZip !== "function") {
+    throw new Error("JSZip is not available.");
+  }
+
+  const zip = new window.JSZip();
+  const folder = zip.folder(categoryFolderName) || zip;
+  const readmeLines = [];
+  const normalizedItems = Array.isArray(items) ? items : [];
+  const [withUrl, withoutUrl] = partition(normalizedItems, (item) => Boolean(item.fileUrl || item.downloadUrl || item.url));
+
+  withoutUrl.forEach((item) => {
+    readmeLines.push(`- ${item.name || item.slug || "Unknown item"}: No direct download link available.`);
+  });
+
+  if (typeof namespace.showToast === "function") {
+    namespace.showToast(`Downloading ${withUrl.length} files...`, "success");
+  }
+
+  const settled = await Promise.allSettled(withUrl.map(async (item) => {
+    const resolved = await resolveZipDownloadTarget(item);
+    if (!resolved.url) {
+      return {
+        status: "skipped",
+        item,
+        reason: resolved.message || "No download URL",
+      };
+    }
+
+    const response = await fetch(resolved.url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    return {
+      status: "fulfilled",
+      item,
+      blob,
+      filename: resolved.filename,
+    };
+  }));
+
+  let bundledCount = 0;
+  let skippedCount = withoutUrl.length;
+  settled.forEach((result, index) => {
+    const item = withUrl[index];
+    if (result.status === "fulfilled" && result.value?.status === "fulfilled") {
+      bundledCount += 1;
+      folder.file(result.value.filename, result.value.blob);
+      return;
+    }
+
+    skippedCount += 1;
+    const reason = result.status === "fulfilled"
+      ? result.value?.reason || "Skipped"
+      : (result.reason instanceof Error ? result.reason.message : "Download failed");
+    readmeLines.push(`- ${item?.name || item?.slug || "Unknown item"}: ${reason}`);
+  });
+
+  if (readmeLines.length > 0) {
+    zip.file("README.txt", [
+      "PackTracker ZIP notes",
+      "",
+      ...readmeLines,
+    ].join("\n"));
+  }
+
+  const archiveBlob = await zip.generateAsync({ type: "blob" });
+  const objectUrl = URL.createObjectURL(archiveBlob);
+  try {
+    await downloadFile(objectUrl, `${sanitizeFileName(profileName)}-${categoryFolderName}.zip`);
+  } finally {
+    window.setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+    }, 1000);
+  }
+
+  if (withoutUrl.length > 0 && typeof namespace.showToast === "function") {
+    namespace.showToast(`${withoutUrl.length} items have no direct download link and were skipped.`, "warning");
+  }
+
+  if (typeof namespace.showToast === "function") {
+    namespace.showToast(`ZIP ready: ${bundledCount} files bundled, ${skippedCount} skipped.`, skippedCount > 0 ? "warning" : "success");
+  }
 }
 
 /**
@@ -1273,6 +1883,9 @@ async function runDownloadQueue() {
 
   downloadSession.running = false;
   renderDownloadProgressModal();
+  if (downloadSession.skippedWithoutDirectUrl > 0 && typeof namespace.showToast === "function") {
+    namespace.showToast(`${downloadSession.skippedWithoutDirectUrl} items have no direct download link and were skipped.`, "warning");
+  }
 }
 
 /**
@@ -1282,7 +1895,7 @@ async function runDownloadQueue() {
  * @returns {Promise<{url:string, filename:string, sizeLabel:string, message?:string}>} Download target info.
  */
 async function resolveDownloadTarget(item) {
-  if (item.versionId) {
+  if (item.source === "modrinth" && item.versionId) {
     const version = await getVersion(item.versionId);
     if (!version.error && Array.isArray(version.files) && version.files.length > 0) {
       const primaryFile = version.files.find((file) => file.primary) || version.files[0];
@@ -1294,23 +1907,33 @@ async function resolveDownloadTarget(item) {
     }
   }
 
-  if (item.downloadUrl) {
+  if (item.fileUrl || item.downloadUrl) {
+    const directUrl = item.fileUrl || item.downloadUrl;
     return {
-      url: item.downloadUrl,
-      filename: inferFileName(item.downloadUrl, item.name),
+      url: directUrl,
+      filename: inferFileName(directUrl, item.name),
       sizeLabel: "",
     };
   }
 
-  const projectId = resolveDownloadProjectId(item);
+  if (item.source === "manual") {
+    return {
+      url: "",
+      filename: "",
+      sizeLabel: "",
+      message: "Manual entries need a direct download URL",
+    };
+  }
+
+  const projectId = resolveProjectId(item);
   if (projectId) {
-    let versions = await getProjectVersions(projectId, {
+    let versions = await getVersionsForSource(item.source, projectId, {
       loader: Array.isArray(item.loaders) && item.loaders.length > 0 ? item.loaders[0] : "",
       gameVersion: Array.isArray(item.mcVersions) && item.mcVersions.length > 0 ? item.mcVersions[0] : "",
     });
 
     if (versions?.error || !Array.isArray(versions) || versions.length === 0) {
-      versions = await getProjectVersions(projectId);
+      versions = await getVersionsForSource(item.source, projectId);
     }
 
     if (!versions?.error && Array.isArray(versions)) {
@@ -1534,12 +2157,15 @@ function sanitizeFileName(value) {
 }
 
 /**
- * Resolves a Modrinth project id from a stored item record.
+ * Resolves a stored project id from an item record.
  *
  * @param {object} item - Download queue item.
- * @returns {string} Modrinth project id or empty string.
+ * @returns {string} Project id or empty string.
  */
 function resolveDownloadProjectId(item) {
+  if (item.projectId) {
+    return String(item.projectId);
+  }
   if (item.modrinthId) {
     return String(item.modrinthId);
   }
@@ -1556,6 +2182,149 @@ function resolveDownloadProjectId(item) {
   } catch (error) {
     return "";
   }
+}
+
+/**
+ * Resolves the canonical project id used by source-aware helpers.
+ *
+ * @param {object} item - Stored item.
+ * @returns {string} Project id.
+ */
+function resolveProjectId(item) {
+  return resolveDownloadProjectId(item);
+}
+
+/**
+ * Fetches a project payload from the correct API source.
+ *
+ * @param {"modrinth"|"curseforge"|string} source - Project source.
+ * @param {string} projectId - Project id.
+ * @returns {Promise<object>} Project payload or error.
+ */
+async function getProjectForSource(source, projectId) {
+  if (source === "curseforge" && typeof cfGetProject === "function") {
+    return cfGetProject(projectId);
+  }
+  return getProject(projectId);
+}
+
+/**
+ * Fetches versions from the correct API source.
+ *
+ * @param {"modrinth"|"curseforge"|string} source - Project source.
+ * @param {string} projectId - Project id.
+ * @param {{loader?:string, gameVersion?:string}} [options] - Optional filters.
+ * @returns {Promise<Array<object>|object>} Version payload.
+ */
+async function getVersionsForSource(source, projectId, options = {}) {
+  if (source === "curseforge" && typeof cfGetProjectVersions === "function") {
+    return cfGetProjectVersions(projectId, options);
+  }
+  return getProjectVersions(projectId, options);
+}
+
+/**
+ * Fetches a single version from the correct API source.
+ *
+ * @param {"modrinth"|"curseforge"|string} source - Item source.
+ * @param {string} versionId - Version identifier.
+ * @returns {Promise<object>} Version payload or error.
+ */
+async function getVersionForSource(source, versionId) {
+  if (source === "curseforge" && typeof cfGetVersion === "function") {
+    return cfGetVersion(versionId);
+  }
+  return getVersion(versionId);
+}
+
+/**
+ * Resolves the most direct downloadable file target for ZIP bundling.
+ *
+ * @param {object} item - Stored item.
+ * @returns {Promise<{url:string, filename:string, message?:string}>} Download target.
+ */
+async function resolveZipDownloadTarget(item) {
+  const directUrl = String(item?.fileUrl || item?.downloadUrl || item?.url || "");
+  if (directUrl) {
+    return {
+      url: directUrl,
+      filename: String(item?.fileName || "") || inferFileName(directUrl, item?.name || item?.slug || "download"),
+    };
+  }
+
+  const versionId = String(item?.versionId || "");
+  if (versionId) {
+    const version = await getVersionForSource(item?.source || "modrinth", versionId);
+    if (!version?.error && Array.isArray(version?.files) && version.files.length > 0) {
+      const primaryFile = version.files.find((file) => file.primary) || version.files[0];
+      return {
+        url: String(primaryFile?.url || ""),
+        filename: String(primaryFile?.filename || "") || `${sanitizeFileName(item?.name || item?.slug || "download")}.jar`,
+      };
+    }
+  }
+
+  const projectId = resolveProjectId(item);
+  if (projectId) {
+    let versions = await getVersionsForSource(item?.source || "modrinth", projectId, {
+      loader: Array.isArray(item?.loaders) && item.loaders.length > 0 ? item.loaders[0] : "",
+      gameVersion: Array.isArray(item?.mcVersions) && item.mcVersions.length > 0 ? item.mcVersions[0] : "",
+    });
+    if (versions?.error || !Array.isArray(versions) || versions.length === 0) {
+      versions = await getVersionsForSource(item?.source || "modrinth", projectId);
+    }
+    if (Array.isArray(versions)) {
+      const downloadableVersion = sortVersionsNewestFirst(versions).find(
+        (version) => Array.isArray(version?.files) && version.files.length > 0
+      );
+      if (downloadableVersion) {
+        const primaryFile = downloadableVersion.files.find((file) => file.primary) || downloadableVersion.files[0];
+        return {
+          url: String(primaryFile?.url || ""),
+          filename: String(primaryFile?.filename || "") || `${sanitizeFileName(item?.name || item?.slug || "download")}.jar`,
+        };
+      }
+    }
+  }
+
+  return {
+    url: "",
+    filename: "",
+    message: "No downloadable file found",
+  };
+}
+
+/**
+ * Builds the public project URL for either Modrinth or CurseForge.
+ *
+ * @param {"modrinth"|"curseforge"|string} source - Item source.
+ * @param {"mod"|"resourcepack"|"shader"} projectType - Project type.
+ * @param {string} slug - Project slug.
+ * @param {string} projectId - Project id fallback.
+ * @returns {string} Public project URL.
+ */
+function buildProjectUrl(source, projectType, slug, projectId) {
+  if (source === "curseforge") {
+    const segment = projectType === "resourcepack"
+      ? "texture-packs"
+      : projectType === "shader"
+        ? "shaders"
+        : "mc-mods";
+    return `https://www.curseforge.com/minecraft/${segment}/${slug || projectId}`;
+  }
+
+  return `https://modrinth.com/${projectType}/${slug || projectId}`;
+}
+
+/**
+ * Resolves the shared project id from a project payload or existing item.
+ *
+ * @param {object} project - Project payload.
+ * @param {object} item - Existing item.
+ * @returns {string} Normalized project id.
+ */
+function resolveNormalizedProjectId(project, item) {
+  return String(project?.project_id || project?.id || item?.projectId || item?.modrinthId || item?.id || "");
 }
 
 /**
@@ -1662,7 +2431,8 @@ async function addDependencyToProfile(projectId, profile) {
         .map((entry) => entry.project_id)
         .filter(Boolean);
 
-  addMod(profile.id, mapProjectVersionToMod(project, version, dependencyIds));
+  const savedItem = addMod(profile.id, mapProjectVersionToMod(project, version, dependencyIds));
+  showCompatibilityWarnings(savedItem, profile);
   return true;
 }
 
@@ -1687,41 +2457,35 @@ function showItemMenu(item, profileId, type, x, y) {
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
-  if (item.modrinthUrl) {
-    menu.appendChild(
-      createContextItem("Open on Modrinth", () => {
-        window.open(item.modrinthUrl, "_blank", "noopener");
-        root.replaceChildren();
-      })
-    );
-  }
-
   if (type === "mod") {
     menu.appendChild(
       createContextItem("Edit notes", () => {
-        root.replaceChildren();
-        showModNotesModal(profileId, item.id);
+        closeContextMenu(root, () => {
+          showModNotesModal(profileId, item.id);
+        });
       })
     );
   } else {
     menu.appendChild(
       createContextItem("Edit notes", () => {
-        root.replaceChildren();
-        showItemNotesModal(profileId, item.id, type);
+        closeContextMenu(root, () => {
+          showItemNotesModal(profileId, item.id, type);
+        });
       })
     );
   }
 
   menu.appendChild(
     createContextItem("Remove from profile", () => {
-      root.replaceChildren();
-      if (type === "mod") {
-        removeMod(profileId, item.id);
-      } else if (type === "resourcepack") {
-        removeResourcePack(profileId, item.id);
-      } else {
-        removeShader(profileId, item.id);
-      }
+      closeContextMenu(root, () => {
+        if (type === "mod") {
+          removeMod(profileId, item.id);
+        } else if (type === "resourcepack") {
+          removeResourcePack(profileId, item.id);
+        } else {
+          removeShader(profileId, item.id);
+        }
+      });
     }, true)
   );
 
@@ -1730,14 +2494,14 @@ function showItemMenu(item, profileId, type, x, y) {
 
   const handleOutsideClick = (event) => {
     if (!menu.contains(event.target)) {
-      root.replaceChildren();
+      closeContextMenu(root);
       window.removeEventListener("mousedown", handleOutsideClick);
       window.removeEventListener("keydown", handleEscape);
     }
   };
   const handleEscape = (event) => {
     if (event.key === "Escape") {
-      root.replaceChildren();
+      closeContextMenu(root);
       window.removeEventListener("mousedown", handleOutsideClick);
       window.removeEventListener("keydown", handleEscape);
     }
@@ -1783,9 +2547,15 @@ function mapProjectVersionToMod(project, version, dependencyIds) {
   const primaryFile = Array.isArray(version?.files)
     ? version.files.find((file) => file.primary) || version.files[0]
     : null;
+  const projectId = resolveNormalizedProjectId(project, {});
+  const source = project?.source || "modrinth";
+  const slug = project?.slug || projectId;
 
   return {
-    id: project.id,
+    id: projectId,
+    projectId,
+    projectType: "mod",
+    slug,
     name: project.title || project.name || "Unknown mod",
     description: project.description || "",
     author: project.author || project.team || "Unknown author",
@@ -1793,15 +2563,265 @@ function mapProjectVersionToMod(project, version, dependencyIds) {
     versionNumber: version.version_number || "Unknown",
     mcVersions: Array.isArray(version.game_versions) ? version.game_versions : [],
     loaders: Array.isArray(version.loaders) ? version.loaders : [],
+    fileUrl: primaryFile?.url || "",
     downloadUrl: primaryFile?.url || "",
-    modrinthUrl: `https://modrinth.com/mod/${project.slug || project.id}`,
+    modrinthId: projectId,
+    modrinthUrl: buildProjectUrl(source, "mod", slug, projectId),
     iconUrl: project.icon_url || "",
-    source: "modrinth",
+    source,
     starred: false,
     notes: "",
     dependencies: dependencyIds,
     addedAt: Date.now(),
   };
+}
+
+/**
+ * Builds the patch applied when a user selects a different project version.
+ *
+ * @param {object} item - Existing stored item.
+ * @param {object} version - Selected version payload.
+ * @param {"mod"|"resourcepack"|"shader"} type - Item type.
+ * @returns {object} Partial item patch.
+ */
+function buildVersionPatch(item, version, type) {
+  const primaryFile = Array.isArray(version?.files)
+    ? version.files.find((file) => file.primary) || version.files[0]
+    : null;
+  const patch = {
+    versionId: version.id || item.versionId || "",
+    version: version.version_number || item.version || "",
+    versionNumber: version.version_number || item.versionNumber || item.version || "",
+    fileUrl: primaryFile?.url || item.fileUrl || item.downloadUrl || "",
+    downloadUrl: primaryFile?.url || item.fileUrl || item.downloadUrl || "",
+  };
+
+  if (type === "mod") {
+    patch.mcVersions = Array.isArray(version.game_versions) ? version.game_versions : item.mcVersions;
+    patch.loaders = Array.isArray(version.loaders) ? version.loaders : item.loaders;
+  }
+
+  return patch;
+}
+
+/**
+ * Chooses the default recommended version for a profile-aware picker.
+ *
+ * @param {Array<object>} versions - Available versions.
+ * @param {object} profile - Owning profile.
+ * @param {"mod"|"resourcepack"|"shader"} projectType - Project type.
+ * @returns {object|null} Recommended version.
+ */
+function findRecommendedVersion(versions, profile, projectType) {
+  const safeVersions = Array.isArray(versions) ? versions : [];
+  if (safeVersions.length === 0 || !profile) {
+    return safeVersions[0] || null;
+  }
+
+  const preferred = safeVersions.find((version) => {
+    const matchesGameVersion = !profile.mcVersion
+      || !Array.isArray(version.game_versions)
+      || version.game_versions.length === 0
+      || version.game_versions.includes(profile.mcVersion);
+    const matchesLoader = projectType !== "mod"
+      || profile.loader === "vanilla"
+      || !Array.isArray(version.loaders)
+      || version.loaders.length === 0
+      || version.loaders.includes(profile.loader);
+    return matchesGameVersion && matchesLoader;
+  });
+
+  return preferred || safeVersions[0] || null;
+}
+
+/**
+ * Creates the release-type badge shown inside version picker rows.
+ *
+ * @param {string} releaseType - Normalized release type.
+ * @returns {HTMLSpanElement} Badge node.
+ */
+function createReleaseTypeBadge(releaseType) {
+  const safeType = String(releaseType || "release").toLowerCase();
+  const modifier = safeType === "alpha"
+    ? "badge-danger"
+    : safeType === "beta"
+      ? "badge-warning"
+      : "badge-source";
+  return createBadge(modifier, RELEASE_TYPE_LABELS[safeType] || "Release");
+}
+
+/**
+ * Formats a version list for compact modal metadata.
+ *
+ * @param {Array<string>} versions - Supported versions.
+ * @returns {string} Joined version summary.
+ */
+function formatVersionList(versions) {
+  const safeVersions = Array.isArray(versions) ? versions.filter(Boolean) : [];
+  return safeVersions.length > 0 ? safeVersions.slice(0, 4).join(", ") : "Any version";
+}
+
+/**
+ * Formats loaders for compact modal metadata.
+ *
+ * @param {Array<string>} loaders - Supported loaders.
+ * @returns {string} Joined loader summary.
+ */
+function formatLoaderList(loaders) {
+  const safeLoaders = Array.isArray(loaders) ? loaders.filter(Boolean) : [];
+  return safeLoaders.length > 0 ? safeLoaders.map(capitalize).join(", ") : "Any loader";
+}
+
+/**
+ * Returns the source label used in UI chrome.
+ *
+ * @param {string} source - Item source.
+ * @returns {string} User-facing label.
+ */
+function resolveSourceLabel(source) {
+  if (source === "curseforge") {
+    return "CurseForge";
+  }
+  if (source === "manual") {
+    return "Manual";
+  }
+  return "Modrinth";
+}
+
+/**
+ * Infers a shared project type from one item.
+ *
+ * @param {object} item - Stored item.
+ * @returns {"mod"|"resourcepack"|"shader"} Project type.
+ */
+function inferProjectTypeFromItem(item) {
+  if (item?.projectType === "resourcepack" || item?.projectType === "shader" || item?.projectType === "mod") {
+    return item.projectType;
+  }
+  if (Array.isArray(item?.mcVersions) || Array.isArray(item?.loaders)) {
+    return "mod";
+  }
+  return "resourcepack";
+}
+
+/**
+ * Infers a shared project type from a tab key.
+ *
+ * @param {"mods"|"resourcepacks"|"shaders"} tab - Active tab key.
+ * @returns {"mod"|"resourcepack"|"shader"} Project type.
+ */
+function inferProjectTypeFromTab(tab) {
+  if (tab === "resourcepacks") {
+    return "resourcepack";
+  }
+  if (tab === "shaders") {
+    return "shader";
+  }
+  return "mod";
+}
+
+/**
+ * Returns the profile collection(s) relevant for duplicate-source checks.
+ *
+ * @param {object} profile - Owning profile.
+ * @param {"mod"|"resourcepack"|"shader"} projectType - Shared project type.
+ * @returns {Array<object>} Relevant sibling items.
+ */
+function resolveProfileCollectionsForProjectType(profile, projectType) {
+  if (!profile) {
+    return [];
+  }
+  if (projectType === "resourcepack") {
+    return Array.isArray(profile.resourcePacks) ? profile.resourcePacks : [];
+  }
+  if (projectType === "shader") {
+    return Array.isArray(profile.shaders) ? profile.shaders : [];
+  }
+  return Array.isArray(profile.mods) ? profile.mods : [];
+}
+
+/**
+ * Shows a lightweight modal message.
+ *
+ * @param {string} titleText - Modal title.
+ * @param {string} bodyText - Modal body text.
+ */
+function showTransientModal(titleText, bodyText) {
+  const overlay = createModalOverlay();
+  const modal = createModalCard();
+  const title = createModalTitle(titleText);
+  const subtitle = createModalSubtitle(bodyText);
+  const actions = createActionRow();
+  const closeButton = createButton("Close");
+  closeButton.addEventListener("click", closeOverlays);
+  actions.appendChild(closeButton);
+  modal.append(title, subtitle, actions);
+  overlay.appendChild(modal);
+  mountModal(overlay);
+}
+
+/**
+ * Partitions a list into matching and non-matching subsets.
+ *
+ * @template T
+ * @param {Array<T>} items - Input items.
+ * @param {(item:T) => boolean} predicate - Match predicate.
+ * @returns {[Array<T>, Array<T>]} Partitioned tuples.
+ */
+function partition(items, predicate) {
+  return (Array.isArray(items) ? items : []).reduce(
+    (groups, item) => {
+      groups[predicate(item) ? 0 : 1].push(item);
+      return groups;
+    },
+    [[], []]
+  );
+}
+
+/**
+ * Attaches a tooltip rendered inside the shared tooltip root.
+ *
+ * @param {HTMLElement} element - Anchor element.
+ * @param {string} text - Tooltip text.
+ */
+function attachTooltip(element, text) {
+  if (!(element instanceof HTMLElement) || !text) {
+    return;
+  }
+
+  const show = () => {
+    const root = document.getElementById(TOOLTIP_ROOT_ID);
+    if (!root) {
+      return;
+    }
+
+    root.replaceChildren();
+    const tooltip = document.createElement("div");
+    tooltip.className = "app-tooltip";
+    tooltip.textContent = text;
+    root.appendChild(tooltip);
+
+    const rect = element.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(12, rect.left + (rect.width / 2) - (tooltipRect.width / 2)),
+      window.innerWidth - tooltipRect.width - 12
+    );
+    const top = Math.max(12, rect.top - tooltipRect.height - 10);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  };
+  const hide = () => {
+    const root = document.getElementById(TOOLTIP_ROOT_ID);
+    if (root) {
+      root.replaceChildren();
+    }
+  };
+
+  element.addEventListener("mouseenter", show);
+  element.addEventListener("focus", show);
+  element.addEventListener("mouseleave", hide);
+  element.addEventListener("blur", hide);
 }
 
 /**
@@ -2064,8 +3084,46 @@ function closeOverlays() {
     }
   }
   if (contextRoot) {
-    contextRoot.replaceChildren();
+    closeContextMenu(contextRoot);
   }
+}
+
+/**
+ * Closes the active context menu with a short exit animation.
+ *
+ * @param {HTMLElement|null} root - Context-menu root.
+ * @param {() => void} [onClosed] - Optional callback after removal.
+ */
+function closeContextMenu(root, onClosed) {
+  if (!(root instanceof HTMLElement)) {
+    if (typeof onClosed === "function") {
+      onClosed();
+    }
+    return;
+  }
+
+  const menu = root.querySelector(".context-menu");
+  if (!(menu instanceof HTMLElement)) {
+    root.replaceChildren();
+    if (typeof onClosed === "function") {
+      onClosed();
+    }
+    return;
+  }
+
+  if (menu.classList.contains("closing")) {
+    return;
+  }
+
+  menu.classList.add("closing");
+  window.setTimeout(() => {
+    if (menu.parentElement === root) {
+      root.replaceChildren();
+    }
+    if (typeof onClosed === "function") {
+      onClosed();
+    }
+  }, 100);
 }
 
 /**
@@ -2159,8 +3217,12 @@ Object.assign(namespace, {
   renderModCard,
   renderPackCard,
   checkCompatibility,
+  checkItemCompatibility,
   getMissingDependencies,
+  openVersionPickerModal,
+  showCompatibilityWarnings,
   showModNotesModal,
   showAddManualModal,
+  downloadCategoryAsZip,
 });
 })();
