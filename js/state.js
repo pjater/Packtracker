@@ -1,8 +1,9 @@
 (function attachStateModule() {
   const VALID_TABS = ["mods", "resourcepacks", "shaders"];
-  const VALID_VIEWS = ["home", "search"];
+  const VALID_VIEWS = ["home", "search", "share"];
   const VALID_VIEW_MODES = ["list", "grid"];
   const VALID_BROWSE_TABS = ["mods", "resourcepacks", "shaders"];
+  const VALID_SEARCH_SOURCES = ["modrinth", "curseforge"];
   const EMPTY_SEARCH_RESULTS = [];
   const VIEW_MODE_STORAGE_KEY = "packtracker_view_modes_v1";
   const FAVORITES_PROFILE_ID = "__favorites__";
@@ -43,6 +44,7 @@
     activeProfileId: null,
     activeTab: "mods",
     activeView: "home",
+    searchSource: "modrinth",
     search: {
       query: "",
       projectType: "mod",
@@ -194,6 +196,22 @@
   }
 
   /**
+   * Switches the active browse/search data source.
+   *
+   * @param {"modrinth"|"curseforge"} source - Search source identifier.
+   * @returns {boolean} True when the source changed.
+   */
+  function setSearchSource(source) {
+    if (!VALID_SEARCH_SOURCES.includes(source) || AppState.searchSource === source) {
+      return false;
+    }
+
+    AppState.searchSource = source;
+    notifyStateChanged("search-source");
+    return true;
+  }
+
+  /**
    * Stores the desired default browse tab before navigating into the search page.
    *
    * @param {"mods"|"resourcepacks"|"shaders"} tab - Requested browse tab.
@@ -341,6 +359,28 @@
 
     return favorites;
   }
+
+  Object.assign(namespace, {
+    AppState,
+    FAVORITES_PROFILE_ID,
+    subscribe,
+    notifyStateChanged,
+    setData,
+    setActiveProfile,
+    setActiveTab,
+    setActiveView,
+    setSearchSource,
+    setSearchState,
+    setSearchResults,
+    setBrowseContext,
+    setDirtyState,
+    setViewMode,
+    getViewMode,
+    getActiveProfile,
+    isFavoritesProfileId,
+    getFavoritesProfile,
+  });
+})();
 
   Object.assign(namespace, {
     AppState,
