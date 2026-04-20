@@ -1,9 +1,11 @@
-﻿(function attachSidebarModule() {
+(function attachSidebarModule() {
   const namespace = window.PackTracker;
   const {
     AppState,
     FAVORITES_PROFILE_ID,
     getGameVersions,
+    notifyStateChanged,
+    saveData,
     setActiveProfile,
     setActiveView,
     createProfile,
@@ -25,6 +27,8 @@
     "1.12.2",
   ];
   let cachedMinecraftVersions = [...COMMON_MC_VERSIONS];
+  let sidebarEditMode = false;
+  let sidebarDragHandle = null;
 
   /**
    * Renders the complete sidebar profile list from current state.
@@ -35,8 +39,29 @@
       return;
     }
 
+    if (sidebarDragHandle) {
+      sidebarDragHandle.destroy();
+      sidebarDragHandle = null;
+    }
+
     container.replaceChildren();
     const profiles = Array.isArray(AppState.data?.profiles) ? AppState.data.profiles : [];
+
+    const orderBar = document.createElement("div");
+    orderBar.className = "sidebar-order-bar";
+
+    const orderButton = document.createElement("button");
+    orderButton.className = sidebarEditMode
+      ? "btn btn-primary btn-small"
+      : "btn btn-small";
+    orderButton.type = "button";
+    orderButton.textContent = sidebarEditMode ? "\u2713 Done" : "Edit order";
+    orderButton.addEventListener("click", () => {
+      sidebarEditMode = !sidebarEditMode;
+      renderSidebar();
+    });
+    orderBar.appendChild(orderButton);
+    container.appendChild(orderBar);
 
     if (profiles.length === 0) {
       const empty = document.createElement("div");
@@ -50,6 +75,28 @@
     }
 
     container.appendChild(renderFavoritesItem());
+
+    if (sidebarEditMode && typeof namespace.enableDragOrder === "function") {
+      sidebarDragHandle = namespace.enableDragOrder(container, (fromIndex, toIndex) => {
+        const profileItems = Array.isArray(AppState.data?.profiles) ? AppState.data.profiles : [];
+        if (!Array.isArray(profileItems)) {
+          return;
+        }
+
+        const moved = profileItems.splice(fromIndex, 1)[0];
+        if (!moved) {
+          return;
+        }
+        profileItems.splice(toIndex, 0, moved);
+
+        if (typeof saveData === "function") {
+          AppState.data = saveData(AppState.data);
+        }
+        if (typeof notifyStateChanged === "function") {
+          notifyStateChanged("reorder-profiles");
+        }
+      });
+    }
   }
 
   /**
@@ -69,7 +116,7 @@
 
     const name = document.createElement("div");
     name.className = "profile-item-name";
-    name.textContent = "★ Favorites";
+    name.textContent = "\u2605 Favorites";
 
     header.appendChild(name);
 
@@ -86,10 +133,14 @@
     count.textContent = `${countStarredItems()} items`;
 
     item.append(header, meta, count);
-    item.addEventListener("click", () => {
-      setActiveProfile(FAVORITES_PROFILE_ID);
-      setActiveView("home");
-    });
+    if (sidebarEditMode) {
+      item.classList.add("is-layout-disabled");
+    } else {
+      item.addEventListener("click", () => {
+        setActiveProfile(FAVORITES_PROFILE_ID);
+        setActiveView("home");
+      });
+    }
 
     return item;
   }
@@ -103,6 +154,25 @@
   function renderProfileItem(profile) {
     const item = document.createElement("div");
     item.className = "profile-item";
+    item.dataset.profileId = profile.id;
+
+    if (sidebarEditMode) {
+      item.setAttribute("data-drag-item", "");
+      item.classList.add("is-reorder-mode");
+
+      const handle = document.createElement("span");
+      handle.className = "drag-handle";
+      handle.textContent = "\u283F";
+      handle.setAttribute("aria-hidden", "true");
+
+      const name = document.createElement("div");
+      name.className = "profile-item-name";
+      name.textContent = `\uD83D\uDCE6 ${profile.name}`;
+
+      item.append(handle, name);
+      return item;
+    }
+
     if (profile.id === AppState.activeProfileId) {
       item.classList.add("active");
     }
@@ -112,19 +182,23 @@
 
     const name = document.createElement("div");
     name.className = "profile-item-name";
-    name.textContent = `📦 ${profile.name}`;
+    name.textContent = `\uD83D\uDCE6 ${profile.name}`;
 
     const settingsButton = document.createElement("button");
     settingsButton.className = "icon-btn profile-settings-btn";
     settingsButton.type = "button";
     settingsButton.setAttribute("aria-label", `Settings for ${profile.name}`);
-    settingsButton.textContent = "⚙";
+    settingsButton.textContent = "\u2699";
     settingsButton.addEventListener("click", (event) => {
       event.stopPropagation();
       showProfileSettingsModal(profile.id);
     });
 
-    header.append(name, settingsButton);
+    const actions = document.createElement("div");
+    actions.className = "profile-item-actions";
+    actions.append(settingsButton);
+
+    header.append(name, actions);
 
     const meta = document.createElement("div");
     meta.className = "profile-item-meta";
@@ -200,7 +274,8 @@
 
     const overlay = createModalOverlay();
     const modal = createModalCard();
-    modal.classList.add("modal-wide");
+    modal.classList.add("modal-wide", "modal-profile-form");
+    const body = createModalBody();
 
     const title = createModalTitle("Profile settings");
     const subtitle = createModalSubtitle("Update the name, Minecraft version, and loader for this profile.");
@@ -239,7 +314,8 @@
     });
 
     actions.append(cancelButton, saveButton);
-    modal.append(title, subtitle, nameGroup.group, versionGroup.group, loaderGroup.group, secondaryActions, actions);
+    body.append(title, subtitle, nameGroup.group, versionGroup.group, loaderGroup.group, secondaryActions, actions);
+    modal.appendChild(body);
     overlay.appendChild(modal);
     mountModalOverlay(overlay);
   }
@@ -266,6 +342,8 @@
   function showProfileFormModal(config) {
     const overlay = createModalOverlay();
     const modal = createModalCard();
+    modal.classList.add("modal-profile-form");
+    const body = createModalBody();
     const title = createModalTitle(config.title);
     const subtitle = createModalSubtitle("Create a profile for a specific Minecraft setup.");
     const nameGroup = createInputGroup("Profile name", "text", config.initialValues.name);
@@ -286,7 +364,8 @@
     });
 
     actions.append(cancelButton, submitButton);
-    modal.append(title, subtitle, nameGroup.group, versionGroup.group, loaderGroup.group, actions);
+    body.append(title, subtitle, nameGroup.group, versionGroup.group, loaderGroup.group, actions);
+    modal.appendChild(body);
     overlay.appendChild(modal);
     mountModalOverlay(overlay);
   }
@@ -300,6 +379,7 @@
   function showDeleteConfirmModal(profileId, profileName) {
     const overlay = createModalOverlay();
     const modal = createModalCard();
+    const body = createModalBody();
     const title = createModalTitle("Delete profile?");
     const subtitle = createModalSubtitle(`Are you sure you want to delete '${profileName}'? This cannot be undone.`);
     const actions = createActionRow();
@@ -311,7 +391,8 @@
       closeSidebarOverlays();
     });
     actions.append(cancelButton, deleteButton);
-    modal.append(title, subtitle, actions);
+    body.append(title, subtitle, actions);
+    modal.appendChild(body);
     overlay.appendChild(modal);
     mountModalOverlay(overlay);
   }
@@ -356,6 +437,17 @@
     const modal = document.createElement("div");
     modal.className = "modal";
     return modal;
+  }
+
+  /**
+   * Creates the shared scrollable modal body container.
+   *
+   * @returns {HTMLDivElement} Modal body.
+   */
+  function createModalBody() {
+    const body = document.createElement("div");
+    body.className = "modal-body";
+    return body;
   }
 
   /**
@@ -474,7 +566,7 @@
 
     const caret = document.createElement("span");
     caret.className = "filter-trigger-caret";
-    caret.textContent = "▾";
+    caret.textContent = "\u25BE";
 
     trigger.append(valueElement, caret);
 
@@ -484,14 +576,26 @@
     const state = {
       value: currentValue,
     };
+    let closeTimer = 0;
 
     /**
      * Closes the select menu.
      */
     function closeMenu() {
+      if (!select.classList.contains("is-open")) {
+        return;
+      }
+
       select.classList.remove("is-open");
+      select.classList.add("is-closing");
+      menu.classList.add("closing");
       window.removeEventListener("mousedown", handleOutsideClick);
       window.removeEventListener("keydown", handleEscape);
+      window.clearTimeout(closeTimer);
+      closeTimer = window.setTimeout(() => {
+        select.classList.remove("is-closing");
+        menu.classList.remove("closing");
+      }, 100);
     }
 
     /**
@@ -547,6 +651,9 @@
         return;
       }
 
+      window.clearTimeout(closeTimer);
+      select.classList.remove("is-closing");
+      menu.classList.remove("closing");
       select.classList.add("is-open");
       window.addEventListener("mousedown", handleOutsideClick);
       window.addEventListener("keydown", handleEscape);
