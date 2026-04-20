@@ -55,7 +55,11 @@
   async function initializeApp() {
     try {
       const data = await loadData();
-      setData(data);
+      if (typeof setData === "function") {
+        setData(data);
+      } else {
+        AppState.data = data;
+      }
 
       if (data.profiles.length > 0) {
         setActiveProfile(data.profiles[0].id);
