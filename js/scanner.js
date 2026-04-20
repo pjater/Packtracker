@@ -6,7 +6,7 @@
     notifyStateChanged,
     searchProjects,
     getProjectVersions,
-    pickFolder,
+    pickFolderLegacy,
     readFilesInFolder,
     getDirectoryLabel,
   } = namespace;
@@ -50,10 +50,7 @@ async function initScanner(profileId) {
 
   const scanConfig = resolveScanConfig();
   try {
-    const folderHandle = await pickFolder({
-      mode: "read",
-      accept: scanConfig.fileExtensions,
-    });
+    const folderHandle = await pickFolderLegacy(scanConfig.fileExtensions);
     if (!folderHandle) {
       return;
     }
@@ -72,11 +69,27 @@ async function initScanner(profileId) {
     renderScanResultsModal();
     notifyStateChanged("scan");
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to read files from the selected folder.";
+    const isSystemFolderIssue = /cannot be opened|system/i.test(message);
+    scanSession = {
+      profileId,
+      folderPath: "Folder access failed",
+      folderHandle: null,
+      rows: [],
+      scanConfig,
+      activeInlineRowId: null,
+      addingAll: false,
+      failedToOpen: true,
+      errorMessage: message,
+      helpText: "Tip: navigate to %AppData%\\.minecraft\\mods (or ~/Library/Application Support/minecraft/mods on Mac) in the folder picker.",
+    };
+    renderScanResultsModal();
+
     if (typeof namespace.showToast === "function") {
-      namespace.showToast(
-        error instanceof Error ? error.message : "Failed to read files from the selected folder.",
-        "danger"
-      );
+      namespace.showToast(isSystemFolderIssue
+        ? "Could not open folder. In Chrome/Edge: use the folder picker and navigate to AppData\\.minecraft\\mods manually."
+        : message,
+      "danger");
     }
   }
 }
@@ -136,9 +149,18 @@ function renderScanResultsModal() {
 
   const subtitle = document.createElement("div");
   subtitle.className = "modal-subtitle";
-  subtitle.textContent = `${scanSession.folderPath} - ${scanSession.rows.length} ${scanSession.scanConfig.fileKindLabel} found`;
+  subtitle.textContent = scanSession.failedToOpen
+    ? (scanSession.errorMessage || "Could not open the selected folder.")
+    : `${scanSession.folderPath} - ${scanSession.rows.length} ${scanSession.scanConfig.fileKindLabel} found`;
 
   titleWrap.append(title, subtitle);
+
+  if (scanSession.failedToOpen && scanSession.helpText) {
+    const helpText = document.createElement("div");
+    helpText.className = "scan-help-tip";
+    helpText.textContent = scanSession.helpText;
+    titleWrap.appendChild(helpText);
+  }
 
   const closeButton = document.createElement("button");
   closeButton.className = "icon-btn";
@@ -165,7 +187,7 @@ function renderScanResultsModal() {
   const addAllButton = document.createElement("button");
   addAllButton.className = "btn";
   addAllButton.type = "button";
-  addAllButton.disabled = scanSession.addingAll;
+  addAllButton.disabled = scanSession.addingAll || scanSession.failedToOpen || scanSession.rows.length === 0;
   addAllButton.textContent = scanSession.addingAll ? "Adding..." : "Add All Found";
   addAllButton.addEventListener("click", () => {
     void addAllFoundMods();
