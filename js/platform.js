@@ -51,11 +51,20 @@
         if (error?.name === "AbortError") {
           return null;
         }
-        throw error;
       }
     }
 
     return pickFolderWithLegacyInput(options.accept || DEFAULT_SCAN_EXTENSIONS);
+  }
+
+  /**
+   * Always uses the legacy directory input picker to avoid system-folder restrictions.
+   *
+   * @param {Array<string>} extensions - Allowed file extensions.
+   * @returns {Promise<{kind:string,name:string,files:Array<File>}|null>} Legacy directory payload or null.
+   */
+  async function pickFolderLegacy(extensions) {
+    return pickFolderWithLegacyInput(extensions || DEFAULT_SCAN_EXTENSIONS);
   }
 
   /**
@@ -82,6 +91,8 @@
           handle: file,
         }));
     }
+
+    await requestDirectoryPermission(directoryHandle);
 
     const results = [];
     for await (const [name, handle] of directoryHandle.entries()) {
@@ -131,19 +142,17 @@
   /**
    * Opens a hidden directory input for browsers without `showDirectoryPicker`.
    *
-   * @param {Array<string>} acceptedExtensions - File extensions used for filtering.
+   * @param {Array<string>} acceptedExtensions - Accepted extension list.
    * @returns {Promise<{kind:string,name:string,files:Array<File>}|null>} Legacy directory payload or null.
    */
   function pickFolderWithLegacyInput(acceptedExtensions) {
+    void acceptedExtensions;
     return new Promise((resolve) => {
       const input = document.createElement("input");
       input.type = "file";
       input.multiple = true;
       input.className = "sr-only";
       input.setAttribute("webkitdirectory", "");
-      if (Array.isArray(acceptedExtensions) && acceptedExtensions.length > 0) {
-        input.accept = acceptedExtensions.join(",");
-      }
 
       input.addEventListener(
         "change",
@@ -169,6 +178,32 @@
   }
 
   /**
+   * Ensures the app has read permission for one File System Access directory handle.
+   *
+   * @param {FileSystemDirectoryHandle|{kind:string}} directoryHandle - Directory handle candidate.
+   * @returns {Promise<void>} Resolves when read permission is available.
+   */
+  async function requestDirectoryPermission(directoryHandle) {
+    if (!directoryHandle || directoryHandle.kind === LEGACY_DIRECTORY_KIND) {
+      return;
+    }
+
+    if (typeof directoryHandle.queryPermission !== "function") {
+      return;
+    }
+
+    const options = { mode: READ_MODE };
+    let permission = await directoryHandle.queryPermission(options);
+    if (permission === "prompt" && typeof directoryHandle.requestPermission === "function") {
+      permission = await directoryHandle.requestPermission(options);
+    }
+
+    if (permission === "denied") {
+      throw new Error("Permission to read this folder was denied.");
+    }
+  }
+
+  /**
    * Checks whether a file name matches one of the allowed extensions.
    *
    * @param {string} name - File name.
@@ -185,8 +220,10 @@
     isRuntimeUnavailableError,
     invokeCommand,
     pickFolder,
+    pickFolderLegacy,
     readFilesInFolder,
     readJarFilesInFolder,
+    requestDirectoryPermission,
     downloadFile,
     getDirectoryLabel,
   });
