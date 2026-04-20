@@ -1,4 +1,4 @@
-﻿(function attachStorageModule() {
+(function attachStorageModule() {
   const namespace = window.PackTracker;
   const { AppState, notifyStateChanged } = namespace;
   const LOCAL_STORAGE_KEY = "packtracker_profiles_v2";
@@ -193,7 +193,7 @@
    * @returns {object|null} Saved resource pack or null.
    */
   function addResourcePack(profileId, resourcePack) {
-    return upsertCollectionItem(profileId, "resourcePacks", normalizePackLike(resourcePack), "add-resource-pack", "Resource pack added");
+    return upsertCollectionItem(profileId, "resourcePacks", normalizePackLike(resourcePack, "resourcepack"), "add-resource-pack", "Resource pack added");
   }
 
   /**
@@ -215,7 +215,7 @@
    * @returns {object|null} Saved shader or null.
    */
   function addShader(profileId, shader) {
-    return upsertCollectionItem(profileId, "shaders", normalizePackLike(shader), "add-shader", "Shader added");
+    return upsertCollectionItem(profileId, "shaders", normalizePackLike(shader, "shader"), "add-shader", "Shader added");
   }
 
   /**
@@ -244,51 +244,146 @@
   /**
    * Downloads the current stored data as a JSON backup.
    */
-  function exportBackup() {
-    const data = normalizeData(AppState.data ?? createEmptyData());
-    const fileName = `packtracker-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  function exportBackup(profileId) {
+    const safeId = String(profileId || "").trim();
+    const profiles = Array.isArray(AppState.data?.profiles) ? AppState.data.profiles : [];
+    const profile = profiles.find((entry) => entry.id === safeId);
+
+    if (!profile) {
+      if (typeof window.PackTracker?.showToast === "function") {
+        window.PackTracker.showToast("No active profile to export.", "danger");
+      }
+      return;
+    }
+
+    const payload = {
+      version: AppState.data?.version ?? 1,
+      profiles: [profile],
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = fileName;
+    const safeName = profile.name.replace(/[^a-z0-9_\-]/gi, "_").toLowerCase();
+    anchor.download = `packtracker-${safeName}.json`;
     document.body.appendChild(anchor);
     anchor.click();
-    document.body.removeChild(anchor);
+    anchor.remove();
     URL.revokeObjectURL(url);
-    showToast("Backup exported");
+    showToast("Profile exported");
   }
 
   /**
    * Reads a backup file and merges non-colliding profiles into current storage.
    *
    * @param {File} file - Selected backup file.
-   * @returns {Promise<{data: object, importedCount: number, skippedCount: number}>} Import result.
+   * @returns {Promise<{data: object, importedCount: number, skippedCount: number, importedProfile: object|null}>} Import result.
    */
   async function importBackup(file) {
     const incomingText = await file.text();
     const incoming = normalizeData(JSON.parse(incomingText));
     const current = ensureAppData();
-    const existingIds = new Set(current.profiles.map((profile) => profile.id));
-    let importedCount = 0;
-    let skippedCount = 0;
+    const firstProfile = incoming.profiles[0];
+    if (!firstProfile) {
+      persistAndNotify("import-backup", "0 profiles imported");
+      return { data: current, importedCount: 0, skippedCount: 0, importedProfile: null };
+    }
 
-    incoming.profiles.forEach((profile) => {
-      if (existingIds.has(profile.id)) {
-        skippedCount += 1;
-        return;
-      }
+    const importedProfile = normalizeProfile({
+      ...firstProfile,
+      id: createId(),
+      name: `${firstProfile.name || "Profile"} (imported)`,
+    });
+    current.profiles.push(importedProfile);
+    persistAndNotify("import-backup", "Profile imported");
+    return { data: current, importedCount: 1, skippedCount: 0, importedProfile };
+  }
 
-      current.profiles.push(normalizeProfile(profile));
-      importedCount += 1;
+  /**
+   * Creates a shareable URL for one saved profile.
+   *
+   * @param {string} profileId - Profile identifier.
+   * @returns {string} Fully qualified share URL.
+   */
+  function generateShareLink(profileId) {
+    const profile = ensureAppData().profiles.find((entry) => entry.id === profileId);
+    if (!profile) {
+      throw new Error("Profile not found.");
+    }
+
+    const payload = {
+      v: 1,
+      name: profile.name,
+      mcVersion: profile.mcVersion,
+      loader: profile.loader,
+      mods: profile.mods.map((item) => serializeShareItem(item)),
+      resourcePacks: profile.resourcePacks.map((item) => serializeShareItem(item)),
+      shaders: profile.shaders.map((item) => serializeShareItem(item)),
+    };
+    const encoded = encodeBase64Url(JSON.stringify(payload));
+    return `${window.location.origin}${window.location.pathname}?share=${encoded}`;
+  }
+
+  /**
+   * Parses a shared-profile URL back into a normalized profile-like object.
+   *
+   * @param {string} url - Input URL containing `?share=...`.
+   * @returns {object} Parsed shared profile.
+   */
+  function parseShareLink(url) {
+    let shareUrl;
+    try {
+      shareUrl = new URL(String(url || ""), window.location.href);
+    } catch (error) {
+      throw new Error("Invalid share link.");
+    }
+
+    const encoded = shareUrl.searchParams.get("share");
+    if (!encoded) {
+      throw new Error("Missing share payload.");
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(decodeBase64Url(encoded));
+    } catch (error) {
+      throw new Error("Share payload could not be decoded.");
+    }
+
+    if (Number(parsed?.v) !== 1) {
+      throw new Error("Unsupported share format.");
+    }
+
+    return normalizeSharedProfile(parsed);
+  }
+
+  /**
+   * Imports a parsed shared profile into local storage as a new saved profile.
+   *
+   * @param {object} sharedProfile - Parsed shared profile.
+   * @returns {object} Imported normalized profile.
+   */
+  function importSharedProfile(sharedProfile) {
+    const data = ensureAppData();
+    const normalizedShare = normalizeSharedProfile(sharedProfile);
+    const importedProfile = normalizeProfile({
+      id: createId(),
+      name: `${normalizedShare.name || "Profile"} (imported)`,
+      mcVersion: normalizedShare.mcVersion,
+      loader: normalizedShare.loader,
+      loaderVersion: "",
+      createdAt: Date.now(),
+      mods: normalizedShare.mods.map((item) => normalizeMod(item)),
+      resourcePacks: normalizedShare.resourcePacks.map((item) => normalizePackLike(item, "resourcepack")),
+      shaders: normalizedShare.shaders.map((item) => normalizePackLike(item, "shader")),
     });
 
-    persistAndNotify("import-backup", `${importedCount} profile(s) imported`);
-    return {
-      data: current,
-      importedCount,
-      skippedCount,
-    };
+    data.profiles.unshift(importedProfile);
+    persistAndNotify("import-share-profile", "Profile imported");
+    return importedProfile;
   }
 
   /**
@@ -404,7 +499,10 @@
       return null;
     }
 
-    Object.assign(current, normalizePackLike({ ...current, ...patch }));
+    Object.assign(current, normalizePackLike(
+      { ...current, ...patch },
+      collectionKey === "shaders" ? "shader" : "resourcepack"
+    ));
     persistAndNotify(reason, toastMessage);
     return current;
   }
@@ -444,8 +542,8 @@
       loaderVersion: String(profile?.loaderVersion || ""),
       createdAt: typeof profile?.createdAt === "number" ? profile.createdAt : Date.now(),
       mods: Array.isArray(profile?.mods) ? profile.mods.map((mod) => normalizeMod(mod)) : [],
-      resourcePacks: Array.isArray(profile?.resourcePacks) ? profile.resourcePacks.map((pack) => normalizePackLike(pack)) : [],
-      shaders: Array.isArray(profile?.shaders) ? profile.shaders.map((shader) => normalizePackLike(shader)) : [],
+      resourcePacks: Array.isArray(profile?.resourcePacks) ? profile.resourcePacks.map((pack) => normalizePackLike(pack, "resourcepack")) : [],
+      shaders: Array.isArray(profile?.shaders) ? profile.shaders.map((shader) => normalizePackLike(shader, "shader")) : [],
     };
   }
 
@@ -456,16 +554,21 @@
    * @returns {object} Normalized mod item.
    */
   function normalizeMod(mod) {
+    const fileUrl = String(mod?.fileUrl || mod?.downloadUrl || mod?.url || "");
     return {
       id: String(mod?.id || createId()),
+      projectId: String(mod?.projectId || mod?.modrinthId || mod?.id || ""),
+      projectType: String(mod?.projectType || "mod"),
+      slug: String(mod?.slug || ""),
       name: String(mod?.name || "Untitled mod"),
       version: String(mod?.version || mod?.versionNumber || ""),
       versionNumber: String(mod?.versionNumber || mod?.version || ""),
       versionId: String(mod?.versionId || ""),
-      modrinthId: String(mod?.modrinthId || mod?.id || ""),
+      modrinthId: String(mod?.modrinthId || mod?.projectId || mod?.id || ""),
       source: normalizeSource(mod?.source, "modrinth"),
-      url: String(mod?.url || mod?.downloadUrl || ""),
-      downloadUrl: String(mod?.downloadUrl || mod?.url || ""),
+      fileUrl,
+      url: fileUrl,
+      downloadUrl: fileUrl,
       modrinthUrl: String(mod?.modrinthUrl || ""),
       description: String(mod?.description || ""),
       author: String(mod?.author || "Unknown"),
@@ -485,16 +588,22 @@
    * @param {unknown} item - Pack-like candidate.
    * @returns {object} Normalized pack-like item.
    */
-  function normalizePackLike(item) {
+  function normalizePackLike(item, fallbackProjectType = "resourcepack") {
+    const fileUrl = String(item?.fileUrl || item?.downloadUrl || item?.url || "");
     return {
       id: String(item?.id || createId()),
+      projectId: String(item?.projectId || item?.modrinthId || item?.id || ""),
+      projectType: String(item?.projectType || fallbackProjectType),
+      slug: String(item?.slug || ""),
       name: String(item?.name || "Untitled item"),
       version: String(item?.version || item?.versionNumber || ""),
+      versionNumber: String(item?.versionNumber || item?.version || ""),
       versionId: String(item?.versionId || ""),
-      modrinthId: String(item?.modrinthId || item?.id || ""),
+      modrinthId: String(item?.modrinthId || item?.projectId || item?.id || ""),
       source: normalizeSource(item?.source, "manual"),
-      url: String(item?.url || item?.downloadUrl || ""),
-      downloadUrl: String(item?.downloadUrl || item?.url || ""),
+      fileUrl,
+      url: fileUrl,
+      downloadUrl: fileUrl,
       modrinthUrl: String(item?.modrinthUrl || ""),
       description: String(item?.description || ""),
       author: String(item?.author || "Unknown"),
@@ -504,6 +613,164 @@
       dependencies: Array.isArray(item?.dependencies) ? item.dependencies.map((dependency) => String(dependency)) : [],
       addedAt: typeof item?.addedAt === "number" ? item.addedAt : Date.now(),
     };
+  }
+
+  /**
+   * Builds the compact share-item schema while preserving direct-download metadata.
+   *
+   * @param {object} item - Stored item.
+   * @returns {object} Shared item payload.
+   */
+  function serializeShareItem(item) {
+    const fallbackSlug = buildShareToken(item?.slug || item?.name || item?.projectId || item?.id || "item");
+    const fallbackVersionId = String(item?.versionId || item?.id || `${fallbackSlug}-version`);
+    return {
+      slug: fallbackSlug,
+      source: normalizeSource(item?.source, "manual"),
+      versionId: fallbackVersionId,
+      name: String(item?.name || "Untitled item"),
+      versionNumber: String(item?.versionNumber || item?.version || ""),
+      projectId: String(item?.projectId || item?.modrinthId || ""),
+      projectType: String(item?.projectType || "mod"),
+      fileUrl: String(item?.fileUrl || item?.downloadUrl || item?.url || ""),
+      fileName: String(item?.fileName || ""),
+      iconUrl: String(item?.iconUrl || ""),
+      description: String(item?.description || ""),
+      author: String(item?.author || "Unknown"),
+      modrinthUrl: String(item?.modrinthUrl || ""),
+      loaders: Array.isArray(item?.loaders) ? item.loaders.map((loader) => String(loader)) : [],
+      mcVersions: Array.isArray(item?.mcVersions) ? item.mcVersions.map((version) => String(version)) : [],
+    };
+  }
+
+  /**
+   * Validates and normalizes the top-level share payload.
+   *
+   * @param {unknown} profile - Decoded share payload.
+   * @returns {object} Normalized shared profile.
+   */
+  function normalizeSharedProfile(profile) {
+    if (!profile || typeof profile !== "object") {
+      throw new Error("Invalid share payload.");
+    }
+
+    const name = String(profile?.name || "").trim();
+    if (!name) {
+      throw new Error("Shared profile is missing a name.");
+    }
+
+    const loader = normalizeLoader(profile?.loader);
+    const mcVersion = String(profile?.mcVersion || "").trim();
+    return {
+      v: 1,
+      shareId: `share:${name}:${mcVersion}:${loader}`,
+      name,
+      mcVersion,
+      loader,
+      mods: normalizeSharedItems(profile?.mods, "mod"),
+      resourcePacks: normalizeSharedItems(profile?.resourcePacks, "resourcepack"),
+      shaders: normalizeSharedItems(profile?.shaders, "shader"),
+    };
+  }
+
+  /**
+   * Normalizes one shared item list and validates required share fields.
+   *
+   * @param {unknown} items - Raw shared items list.
+   * @param {"mod"|"resourcepack"|"shader"} fallbackProjectType - Default project type.
+   * @returns {Array<object>} Normalized items.
+   */
+  function normalizeSharedItems(items, fallbackProjectType) {
+    if (!Array.isArray(items)) {
+      return [];
+    }
+
+    return items.map((item) => {
+      const name = String(item?.name || "").trim();
+      const versionId = String(item?.versionId || "").trim();
+      const slug = String(item?.slug || "").trim();
+      const source = normalizeSource(item?.source, "manual");
+
+      if (!name || !versionId || !slug || !source) {
+        throw new Error("Shared profile contains an invalid item.");
+      }
+
+      const normalizedItem = {
+        id: createId(),
+        projectId: String(item?.projectId || ""),
+        projectType: String(item?.projectType || fallbackProjectType),
+        slug,
+        name,
+        version: String(item?.versionNumber || ""),
+        versionNumber: String(item?.versionNumber || ""),
+        versionId,
+        modrinthId: String(item?.projectId || ""),
+        source,
+        fileUrl: String(item?.fileUrl || ""),
+        url: String(item?.fileUrl || ""),
+        downloadUrl: String(item?.fileUrl || ""),
+        fileName: String(item?.fileName || ""),
+        modrinthUrl: String(item?.modrinthUrl || ""),
+        description: String(item?.description || ""),
+        author: String(item?.author || "Unknown"),
+        iconUrl: String(item?.iconUrl || ""),
+        loaders: Array.isArray(item?.loaders) ? item.loaders.map((loader) => String(loader).toLowerCase()) : [],
+        mcVersions: Array.isArray(item?.mcVersions) ? item.mcVersions.map((version) => String(version)) : [],
+        dependencies: [],
+        notes: "",
+        starred: false,
+        addedAt: Date.now(),
+      };
+
+      return fallbackProjectType === "mod"
+        ? normalizeMod(normalizedItem)
+        : normalizePackLike(normalizedItem, fallbackProjectType);
+    });
+  }
+
+  /**
+   * Builds a compact URL-safe fallback token for shared items.
+   *
+   * @param {string} value - Raw item label.
+   * @returns {string} Compact token.
+   */
+  function buildShareToken(value) {
+    return String(value || "item")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "item";
+  }
+
+  /**
+   * Encodes arbitrary UTF-8 text into base64url.
+   *
+   * @param {string} value - Plain JSON string.
+   * @returns {string} Base64url payload.
+   */
+  function encodeBase64Url(value) {
+    const bytes = new TextEncoder().encode(String(value || ""));
+    let binary = "";
+    bytes.forEach((byte) => {
+      binary += String.fromCharCode(byte);
+    });
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+
+  /**
+   * Decodes one base64url string into UTF-8 text.
+   *
+   * @param {string} value - Encoded payload.
+   * @returns {string} Decoded text.
+   */
+  function decodeBase64Url(value) {
+    const normalized = String(value || "")
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
+    const padded = normalized + "===".slice((normalized.length + 3) % 4);
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
   }
 
   /**
@@ -606,5 +873,8 @@
     updateShader,
     exportBackup,
     importBackup,
+    generateShareLink,
+    parseShareLink,
+    importSharedProfile,
   });
 })();
