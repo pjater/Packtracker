@@ -6,6 +6,8 @@
     notifyStateChanged,
     searchProjects,
     getProjectVersions,
+    cfSearchProjects,
+    cfGetProjectVersions,
     pickFolderLegacy,
     readFilesInFolder,
     getDirectoryLabel,
@@ -209,7 +211,7 @@ function renderScanResultsModal() {
 }
 
 /**
- * Renders one scan row plus its optional inline Modrinth match.
+ * Renders one scan row plus its optional inline match.
  *
  * @param {object} row - Scan row state.
  * @returns {HTMLDivElement} Row wrapper.
@@ -285,7 +287,7 @@ function renderScanRow(row) {
 }
 
 /**
- * Finds and opens the best inline Modrinth match for a scanned row.
+ * Finds and opens the best inline Modrinth or CurseForge match for a scanned row.
  *
  * @param {string} rowId - Scan row identifier.
  */
@@ -299,40 +301,15 @@ async function openInlineSearch(rowId) {
   try {
     row.searching = true;
     row.status = "pending";
-    row.statusText = "Searching Modrinth...";
+    row.statusText = "Searching Modrinth and CurseForge...";
     renderScanResultsModal();
 
-    const response = await searchProjects({
-      query: row.parsedName,
-      projectType: scanSession.scanConfig.projectType,
-      loader: scanSession.scanConfig.projectType === "mod" && profile.loader !== "vanilla" ? profile.loader : "",
-      gameVersion: profile.mcVersion,
-      offset: 0,
-    });
-
+    const match = await resolveScanSearchResult(row, profile);
     row.searching = false;
-    if (response.error || !Array.isArray(response.hits) || response.hits.length === 0) {
+    if (!match) {
       row.searchResult = null;
       row.status = "not-found";
-      row.statusText = response.error ? (response.message || "Search failed") : "No Modrinth match found";
-      scanSession.activeInlineRowId = null;
-      renderScanResultsModal();
-      return;
-    }
-
-    const project = response.hits[0];
-    let versions = await getProjectVersions(project.project_id || project.id, {
-      loader: scanSession.scanConfig.projectType === "mod" && profile.loader !== "vanilla" ? profile.loader : "",
-      gameVersion: profile.mcVersion,
-    });
-    if (versions.error || versions.length === 0) {
-      versions = await getProjectVersions(project.project_id || project.id);
-    }
-
-    if (versions.error || versions.length === 0) {
-      row.searchResult = null;
-      row.status = "not-found";
-      row.statusText = versions.error ? (versions.message || "Version lookup failed") : "No installable version found";
+      row.statusText = "No Modrinth or CurseForge match found";
       scanSession.activeInlineRowId = null;
       renderScanResultsModal();
       return;
@@ -340,10 +317,7 @@ async function openInlineSearch(rowId) {
 
     row.status = "pending";
     row.statusText = "Match found below";
-    row.searchResult = {
-      project,
-      version: sortVersionsNewestFirst(versions)[0],
-    };
+    row.searchResult = match;
     scanSession.activeInlineRowId = row.id;
     renderScanResultsModal();
     scrollScanRowIntoView(row.id);
@@ -462,7 +436,7 @@ function renderInlineSearchResult(row) {
 
   const meta = document.createElement("div");
   meta.className = "scan-inline-meta";
-  meta.textContent = `${row.searchResult.version.version_number || "Unknown"} - ${formatLoaders(row.searchResult.version.loaders)} - ${formatMcVersion(row.searchResult.version.game_versions)}`;
+  meta.textContent = `${resolveSearchSourceLabel(row.searchResult.project.source)} - ${row.searchResult.version.version_number || "Unknown"} - ${formatLoaders(row.searchResult.version.loaders)} - ${formatMcVersion(row.searchResult.version.game_versions)}`;
 
   const description = document.createElement("div");
   description.className = "scan-inline-description";
@@ -493,6 +467,171 @@ function renderInlineSearchResult(row) {
   content.append(title, meta, description, actions);
   panel.appendChild(content);
   return panel;
+}
+
+/**
+ * Searches both supported project sources and returns the strongest installable match.
+ *
+ * @param {object} row - Scan row state.
+ * @param {object} profile - Active profile.
+ * @returns {Promise<{project:object, version:object}|null>} Best match or null.
+ */
+async function resolveScanSearchResult(row, profile) {
+  const projectType = scanSession?.scanConfig?.projectType || "mod";
+  const loader = projectType === "mod" && profile.loader !== "vanilla" ? profile.loader : "";
+  const queries = Array.from(new Set([
+    String(row?.parsedName || "").trim(),
+    String(row?.filename || "").replace(/\.(jar|zip)$/i, "").trim(),
+  ].filter(Boolean)));
+  let bestCandidate = null;
+
+  for (const source of ["modrinth", "curseforge"]) {
+    for (const query of queries) {
+      const searchResponse = await searchScanSource(source, {
+        query,
+        projectType,
+        loader,
+        gameVersion: profile.mcVersion,
+        offset: 0,
+      });
+      if (searchResponse?.error || !Array.isArray(searchResponse?.hits) || searchResponse.hits.length === 0) {
+        continue;
+      }
+
+      for (const project of searchResponse.hits.slice(0, 3)) {
+        const versionsResponse = await getScanVersionsForSource(source, project.project_id || project.id, {
+          loader,
+          gameVersion: profile.mcVersion,
+        });
+        let versions = versionsResponse;
+        if (versions?.error || !Array.isArray(versions) || versions.length === 0) {
+          versions = await getScanVersionsForSource(source, project.project_id || project.id);
+        }
+        if (versions?.error || !Array.isArray(versions) || versions.length === 0) {
+          continue;
+        }
+
+        const nextVersion = sortVersionsNewestFirst(versions)[0];
+        if (!nextVersion) {
+          continue;
+        }
+
+        const candidate = {
+          project,
+          version: nextVersion,
+          score: scoreScanProjectMatch(row, project),
+        };
+        if (!bestCandidate || compareScanCandidates(candidate, bestCandidate) < 0) {
+          bestCandidate = candidate;
+        }
+      }
+    }
+  }
+
+  return bestCandidate
+    ? {
+        project: bestCandidate.project,
+        version: bestCandidate.version,
+      }
+    : null;
+}
+
+/**
+ * Performs one scan search request against a chosen source.
+ *
+ * @param {"modrinth"|"curseforge"} source - Search source.
+ * @param {object} options - Search options.
+ * @returns {Promise<object>} Search response.
+ */
+async function searchScanSource(source, options) {
+  if (source === "curseforge" && typeof cfSearchProjects === "function") {
+    return cfSearchProjects(options);
+  }
+  return searchProjects(options);
+}
+
+/**
+ * Loads versions for one scan match from a chosen source.
+ *
+ * @param {"modrinth"|"curseforge"} source - Search source.
+ * @param {string} projectId - Project identifier.
+ * @param {object} options - Version filters.
+ * @returns {Promise<Array<object>|object>} Version list or error payload.
+ */
+async function getScanVersionsForSource(source, projectId, options = {}) {
+  if (source === "curseforge" && typeof cfGetProjectVersions === "function") {
+    return cfGetProjectVersions(projectId, options);
+  }
+  return getProjectVersions(projectId, options);
+}
+
+/**
+ * Scores one scan candidate against the parsed filename.
+ *
+ * @param {object} row - Scan row state.
+ * @param {object} project - Search hit.
+ * @returns {number} Higher is better.
+ */
+function scoreScanProjectMatch(row, project) {
+  const query = normalizeScanSearchText(row?.parsedName || row?.filename || "");
+  const title = normalizeScanSearchText(project?.title || project?.name || "");
+  const slug = normalizeScanSearchText(project?.slug || "");
+
+  let score = 0;
+  if (title === query) {
+    score += 400;
+  } else if (title.includes(query) || query.includes(title)) {
+    score += 220;
+  }
+
+  if (slug === query) {
+    score += 260;
+  } else if (slug && (slug.includes(query) || query.includes(slug))) {
+    score += 140;
+  }
+
+  score += Math.min(Number(project?.downloads || project?.follows || 0) / 1000, 60);
+  return score;
+}
+
+/**
+ * Compares two scan candidates so the strongest result sorts first.
+ *
+ * @param {{score:number, version:object, project:object}} left - Candidate A.
+ * @param {{score:number, version:object, project:object}} right - Candidate B.
+ * @returns {number} Negative when left is better.
+ */
+function compareScanCandidates(left, right) {
+  if (left.score !== right.score) {
+    return right.score - left.score;
+  }
+
+  const leftDate = new Date(left?.version?.date_published || left?.project?.date_published || 0).getTime();
+  const rightDate = new Date(right?.version?.date_published || right?.project?.date_published || 0).getTime();
+  return rightDate - leftDate;
+}
+
+/**
+ * Normalizes scan search text for loose match comparisons.
+ *
+ * @param {string} value - Raw text.
+ * @returns {string} Normalized token string.
+ */
+function normalizeScanSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Converts an internal source id into a UI label.
+ *
+ * @param {string} source - Source identifier.
+ * @returns {string} Display label.
+ */
+function resolveSearchSourceLabel(source) {
+  return source === "curseforge" ? "CurseForge" : "Modrinth";
 }
 
 /**
