@@ -24,9 +24,11 @@
     getProject,
     getVersion,
     getProjectVersions,
+    searchProjects,
     cfGetProject,
     cfGetVersion,
     cfGetProjectVersions,
+    cfSearchProjects,
     initScanner,
     downloadFile,
   } = namespace;
@@ -1415,7 +1417,7 @@ async function runBulkUpdateQueue(profileId, tab, targetVersion) {
     }
 
     row.status = UPDATE_ROW_STATES.CHECKING;
-    row.message = `checking ${resolveSourceLabel(currentItem.source || "modrinth")}...`;
+    row.message = "checking Modrinth and CurseForge...";
     renderBulkUpdateProgressModal();
 
     try {
@@ -1448,7 +1450,7 @@ async function runBulkUpdateQueue(profileId, tab, targetVersion) {
 }
 
 /**
- * Finds a compatible Modrinth version for one item and target Minecraft version.
+ * Finds the best compatible Modrinth or CurseForge version for one item and target Minecraft version.
  *
  * @param {object} item - Stored item.
  * @param {"mods"|"resourcepacks"|"shaders"} tab - Active tab key.
@@ -1457,25 +1459,66 @@ async function runBulkUpdateQueue(profileId, tab, targetVersion) {
  * @returns {Promise<{kind:"update", project:object, version:object, message:string}|{kind:"skip", message:string}>} Update candidate.
  */
 async function resolveBulkUpdateCandidate(item, tab, targetVersion, profile) {
-  const projectId = resolveProjectId(item);
-  if (!projectId || item.source === "manual") {
+  if (item.source === "manual") {
     return { kind: "skip", message: "Manual item or missing project link" };
   }
 
-  const project = await getProjectForSource(item.source, projectId);
-  if (project.error) {
-    return { kind: "skip", message: project.message || "Could not load project" };
+  const projectType = tab === "resourcepacks" ? "resourcepack" : tab === "shaders" ? "shader" : "mod";
+  const sourcesToTry = Array.from(new Set([item.source || "modrinth", "modrinth", "curseforge"]))
+    .filter((source) => source !== "manual");
+  let bestCandidate = null;
+  let fallbackMessage = "No versions found";
+
+  for (const source of sourcesToTry) {
+    const candidate = await resolveBulkUpdateCandidateForSource(item, tab, targetVersion, profile, projectType, source);
+    if (candidate.kind === "update") {
+      if (!bestCandidate || compareBulkUpdateCandidates(candidate, bestCandidate, item.source || "modrinth") < 0) {
+        bestCandidate = candidate;
+      }
+      continue;
+    }
+
+    fallbackMessage = candidate.message || fallbackMessage;
   }
 
-  let versions = await getVersionsForSource(item.source, projectId, {
+  if (bestCandidate) {
+    return bestCandidate;
+  }
+
+  return { kind: "skip", message: fallbackMessage };
+}
+
+/**
+ * Resolves one bulk-update candidate from a specific source.
+ *
+ * @param {object} item - Stored item.
+ * @param {"mods"|"resourcepacks"|"shaders"} tab - Active tab key.
+ * @param {string} targetVersion - Requested Minecraft version.
+ * @param {object} profile - Owning profile.
+ * @param {"mod"|"resourcepack"|"shader"} projectType - Resolved project type.
+ * @param {"modrinth"|"curseforge"} source - Candidate source.
+ * @returns {Promise<{kind:"update", project:object, version:object, message:string, source:string}|{kind:"skip", message:string}>} Candidate result.
+ */
+async function resolveBulkUpdateCandidateForSource(item, tab, targetVersion, profile, projectType, source) {
+  const project = await resolveBulkUpdateProjectForSource(item, projectType, profile, source);
+  if (project?.error) {
+    return { kind: "skip", message: project.message || `Could not load ${resolveSourceLabel(source)} project` };
+  }
+
+  const projectId = resolveNormalizedProjectId(project, source === item.source ? item : {});
+  if (!projectId) {
+    return { kind: "skip", message: `No ${resolveSourceLabel(source)} match found` };
+  }
+
+  let versions = await getVersionsForSource(source, projectId, {
     loader: tab === "mods" && profile.loader !== "vanilla" ? profile.loader : "",
     gameVersion: targetVersion,
   });
   if (versions.error || versions.length === 0) {
-    versions = await getVersionsForSource(item.source, projectId);
+    versions = await getVersionsForSource(source, projectId);
   }
   if (versions.error || versions.length === 0) {
-    return { kind: "skip", message: "No versions found" };
+    return { kind: "skip", message: `No ${resolveSourceLabel(source)} versions found` };
   }
 
   const compatibleVersions = sortVersionsNewestFirst(versions).filter((version) => {
@@ -1490,8 +1533,8 @@ async function resolveBulkUpdateCandidate(item, tab, targetVersion, profile) {
     return {
       kind: "skip",
       message: tab === "mods"
-        ? `No ${capitalize(profile.loader)} version for ${targetVersion}`
-        : `No version found for ${targetVersion}`,
+        ? `No ${capitalize(profile.loader)} ${resolveSourceLabel(source)} version for ${targetVersion}`
+        : `No ${resolveSourceLabel(source)} version found for ${targetVersion}`,
     };
   }
 
@@ -1505,8 +1548,138 @@ async function resolveBulkUpdateCandidate(item, tab, targetVersion, profile) {
     kind: "update",
     project,
     version: nextVersion,
-    message: `Updated to ${nextVersion.version_number || targetVersion}`,
+    source,
+    message: `Updated via ${resolveSourceLabel(source)} to ${nextVersion.version_number || targetVersion}`,
   };
+}
+
+/**
+ * Resolves a project on one source, using direct ids for same-source items and name search for cross-source matches.
+ *
+ * @param {object} item - Stored item.
+ * @param {"mod"|"resourcepack"|"shader"} projectType - Resolved project type.
+ * @param {object} profile - Owning profile.
+ * @param {"modrinth"|"curseforge"} source - Candidate source.
+ * @returns {Promise<object>} Project payload or error-like object.
+ */
+async function resolveBulkUpdateProjectForSource(item, projectType, profile, source) {
+  const currentSource = item.source || "modrinth";
+  const directProjectId = source === currentSource ? resolveProjectId(item) : "";
+  if (directProjectId) {
+    return getProjectForSource(source, directProjectId);
+  }
+
+  const queries = Array.from(new Set([
+    String(item?.slug || "").trim(),
+    String(item?.name || "").trim(),
+  ].filter(Boolean)));
+  const loader = projectType === "mod" && profile.loader !== "vanilla" ? profile.loader : "";
+  let bestProject = null;
+  let bestScore = -1;
+
+  for (const query of queries) {
+    const response = await searchProjectsForSource(source, {
+      query,
+      projectType,
+      loader,
+      gameVersion: profile.mcVersion,
+      offset: 0,
+    });
+    if (response?.error || !Array.isArray(response?.hits) || response.hits.length === 0) {
+      continue;
+    }
+
+    response.hits.slice(0, 5).forEach((project) => {
+      const score = scoreProjectSearchMatch(item, project);
+      if (score > bestScore) {
+        bestScore = score;
+        bestProject = project;
+      }
+    });
+  }
+
+  return bestProject || { error: true, message: `No ${resolveSourceLabel(source)} match found` };
+}
+
+/**
+ * Searches projects on the selected source using the shared browse APIs.
+ *
+ * @param {"modrinth"|"curseforge"} source - Search source.
+ * @param {object} options - Search options.
+ * @returns {Promise<object>} Search response.
+ */
+async function searchProjectsForSource(source, options) {
+  if (source === "curseforge" && typeof cfSearchProjects === "function") {
+    return cfSearchProjects(options);
+  }
+  return searchProjects(options);
+}
+
+/**
+ * Scores one searched project against the currently tracked item.
+ *
+ * @param {object} item - Stored item.
+ * @param {object} project - Search result project.
+ * @returns {number} Higher is better.
+ */
+function scoreProjectSearchMatch(item, project) {
+  const itemName = normalizeProjectSearchText(item?.name || "");
+  const itemSlug = normalizeProjectSearchText(item?.slug || "");
+  const projectName = normalizeProjectSearchText(project?.title || project?.name || "");
+  const projectSlug = normalizeProjectSearchText(project?.slug || "");
+  let score = 0;
+
+  if (itemName && projectName === itemName) {
+    score += 400;
+  } else if (itemName && (projectName.includes(itemName) || itemName.includes(projectName))) {
+    score += 220;
+  }
+
+  if (itemSlug && projectSlug === itemSlug) {
+    score += 340;
+  } else if (itemSlug && projectSlug && (projectSlug.includes(itemSlug) || itemSlug.includes(projectSlug))) {
+    score += 180;
+  }
+
+  score += Math.min(Number(project?.downloads || project?.follows || 0) / 1000, 80);
+  return score;
+}
+
+/**
+ * Compares two source candidates so the best overall update wins.
+ *
+ * @param {{source:string, version:object}} left - Candidate A.
+ * @param {{source:string, version:object}} right - Candidate B.
+ * @param {string} preferredSource - Source already used by the item.
+ * @returns {number} Negative when left is better.
+ */
+function compareBulkUpdateCandidates(left, right, preferredSource) {
+  const leftDate = new Date(left?.version?.date_published || 0).getTime();
+  const rightDate = new Date(right?.version?.date_published || 0).getTime();
+  if (leftDate !== rightDate) {
+    return rightDate - leftDate;
+  }
+
+  if (left.source === preferredSource && right.source !== preferredSource) {
+    return -1;
+  }
+  if (right.source === preferredSource && left.source !== preferredSource) {
+    return 1;
+  }
+  return 0;
+}
+
+/**
+ * Normalizes text for loose project-name comparisons.
+ *
+ * @param {string} value - Raw label.
+ * @returns {string} Normalized text.
+ */
+function normalizeProjectSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 /**
@@ -1522,7 +1695,7 @@ function applyBulkUpdateToItem(item, project, version, tab) {
     ? version.files.find((file) => file.primary) || version.files[0]
     : null;
   const nextProjectId = resolveNormalizedProjectId(project, item);
-  const nextSource = item.source || "modrinth";
+  const nextSource = project?.source || item.source || "modrinth";
   const nextProjectType = tab === "resourcepacks" ? "resourcepack" : tab === "shaders" ? "shader" : "mod";
   const nextSlug = project?.slug || item.slug || nextProjectId;
 
@@ -2295,6 +2468,33 @@ async function resolveZipDownloadTarget(item) {
 }
 
 /**
+ * Starts a direct download for one tracked item using the same target resolution as ZIP bundling.
+ *
+ * @param {object} item - Stored item.
+ * @returns {Promise<boolean>} True when a download was started.
+ */
+async function startTrackedItemDownload(item) {
+  const target = await resolveZipDownloadTarget(item);
+  if (!target.url) {
+    if (typeof namespace.showToast === "function") {
+      namespace.showToast(target.message || "No downloadable file found", "warning");
+    }
+    return false;
+  }
+
+  if (typeof downloadFile === "function") {
+    await downloadFile(target.url, target.filename);
+  } else {
+    window.open(target.url, "_blank", "noopener");
+  }
+
+  if (typeof namespace.showToast === "function") {
+    namespace.showToast(`Download started for ${item?.name || "item"}`, "success");
+  }
+  return true;
+}
+
+/**
  * Builds the public project URL for either Modrinth or CurseForge.
  *
  * @param {"modrinth"|"curseforge"|string} source - Item source.
@@ -2474,6 +2674,28 @@ function showItemMenu(item, profileId, type, x, y) {
       })
     );
   }
+
+  const downloadItem = createContextItem("Download file", async () => {
+    downloadItem.disabled = true;
+    downloadItem.textContent = "Preparing...";
+
+    try {
+      const started = await startTrackedItemDownload(item);
+      if (started) {
+        closeContextMenu(root);
+      } else {
+        downloadItem.disabled = false;
+        downloadItem.textContent = "Download file";
+      }
+    } catch (error) {
+      downloadItem.disabled = false;
+      downloadItem.textContent = "Download file";
+      if (typeof namespace.showToast === "function") {
+        namespace.showToast(error instanceof Error ? error.message : "Download failed", "danger");
+      }
+    }
+  });
+  menu.appendChild(downloadItem);
 
   menu.appendChild(
     createContextItem("Remove from profile", () => {
