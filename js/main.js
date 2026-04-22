@@ -33,6 +33,7 @@
   const PAGE_EXIT_CLASS = "page-exit";
   const PAGE_EXIT_MS = 120;
   const PAGE_ENTER_MS = 240;
+  let deferredInstallPrompt = null;
   const PROJECT_TYPE_TO_TAB = {
     mod: "mods",
     resourcepack: "resourcepacks",
@@ -116,9 +117,32 @@
    * Binds top-level application controls and custom event bridges.
    */
   function bindTopLevelEvents() {
+    const installAppButton = document.getElementById("install-app-button");
     const exportButton = document.getElementById("export-button");
     const importInput = document.getElementById("import-input");
     const newProfileButton = document.getElementById("new-profile-button");
+
+    installAppButton?.addEventListener("click", async () => {
+      if (isStandaloneAppMode()) {
+        showToast("PackTracker is already installed as an app.", "success");
+        syncInstallButtonVisibility();
+        return;
+      }
+
+      if (!deferredInstallPrompt) {
+        showToast("App install is not available yet in this browser. Try Chrome or Edge over HTTPS.", "warning");
+        return;
+      }
+
+      deferredInstallPrompt.prompt();
+      try {
+        await deferredInstallPrompt.userChoice;
+      } catch (error) {
+        // Ignore prompt cancellation.
+      }
+      deferredInstallPrompt = null;
+      syncInstallButtonVisibility();
+    });
 
     exportButton?.addEventListener("click", () => {
       exportBackup(AppState.activeProfileId);
@@ -465,11 +489,46 @@
       return;
     }
 
+    window.addEventListener("beforeinstallprompt", (event) => {
+      event.preventDefault();
+      deferredInstallPrompt = event;
+      syncInstallButtonVisibility();
+    });
+
+    window.addEventListener("appinstalled", () => {
+      deferredInstallPrompt = null;
+      syncInstallButtonVisibility();
+      showToast("PackTracker installed as an app.", "success");
+    });
+
     window.addEventListener("load", () => {
       navigator.serviceWorker.register("./sw.js?v=20260422-1").catch((error) => {
         console.warn("PackTracker: service worker registration failed", error);
       });
+      syncInstallButtonVisibility();
     }, { once: true });
+  }
+
+  /**
+   * Shows or hides the explicit install button based on browser install support.
+   */
+  function syncInstallButtonVisibility() {
+    const installAppButton = document.getElementById("install-app-button");
+    if (!installAppButton) {
+      return;
+    }
+
+    const shouldShow = !isStandaloneAppMode() && Boolean(deferredInstallPrompt);
+    installAppButton.classList.toggle("hidden", !shouldShow);
+  }
+
+  /**
+   * Returns true when PackTracker already runs in standalone installed-app mode.
+   *
+   * @returns {boolean} Standalone display-mode flag.
+   */
+  function isStandaloneAppMode() {
+    return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
   }
 
   Object.assign(window.PackTracker, {
