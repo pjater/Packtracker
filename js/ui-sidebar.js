@@ -29,6 +29,8 @@
   let cachedMinecraftVersions = [...COMMON_MC_VERSIONS];
   let sidebarEditMode = false;
   let sidebarDragHandle = null;
+  const DEFAULT_PROFILE_NAME = "New profile";
+  const DEFAULT_MC_VERSION = "1.21.1";
 
   /**
    * Renders the complete sidebar profile list from current state.
@@ -229,7 +231,7 @@
       submitLabel: "Save profile",
       initialValues: {
         name: "",
-        mcVersion: "1.21.1",
+        mcVersion: getLatestMinecraftVersion(),
         loader: "fabric",
       },
       onSubmit(values) {
@@ -281,7 +283,7 @@
     const subtitle = createModalSubtitle("Update the name, Minecraft version, and loader for this profile.");
 
     const nameGroup = createInputGroup("Profile name", "text", profile.name);
-    const versionGroup = createMinecraftVersionGroup("Minecraft version", profile.mcVersion || "1.21.1");
+    const versionGroup = createMinecraftVersionGroup("Minecraft version", profile.mcVersion || getLatestMinecraftVersion());
     const loaderGroup = createSelectGroup("Loader", LOADERS, profile.loader, (loader) => capitalize(loader === "neoforge" ? "NeoForge" : loader));
 
     const secondaryActions = document.createElement("div");
@@ -307,7 +309,7 @@
     saveButton.addEventListener("click", () => {
       updateProfile(profileId, {
         name: nameGroup.input.value.trim() || profile.name,
-        mcVersion: versionGroup.getValue() || "1.21.1",
+        mcVersion: versionGroup.getValue() || getLatestMinecraftVersion(),
         loader: loaderGroup.getValue(),
       });
       closeSidebarOverlays();
@@ -346,8 +348,12 @@
     const body = createModalBody();
     const title = createModalTitle(config.title);
     const subtitle = createModalSubtitle("Create a profile for a specific Minecraft setup.");
-    const nameGroup = createInputGroup("Profile name", "text", config.initialValues.name);
-    const versionGroup = createMinecraftVersionGroup("Minecraft version", config.initialValues.mcVersion || "1.21.1");
+    const nameGroup = createInputGroup("Profile name", "text", config.initialValues.name, {
+      placeholder: config.defaultName || DEFAULT_PROFILE_NAME,
+    });
+    const versionGroup = createMinecraftVersionGroup("Minecraft version", config.initialValues.mcVersion || getLatestMinecraftVersion(), {
+      autoDefault: !config.initialValues.mcVersion,
+    });
     const loaderGroup = createSelectGroup("Loader", LOADERS, config.initialValues.loader, (loader) => capitalize(loader === "neoforge" ? "NeoForge" : loader));
 
     const actions = createActionRow();
@@ -355,9 +361,10 @@
     const submitButton = createButton(config.submitLabel, "btn-primary");
     cancelButton.addEventListener("click", closeSidebarOverlays);
     submitButton.addEventListener("click", () => {
+      const fallbackName = config.defaultName || DEFAULT_PROFILE_NAME;
       config.onSubmit({
-        name: nameGroup.input.value.trim() || "New profile",
-        mcVersion: versionGroup.getValue() || "1.21.1",
+        name: nameGroup.input.value.trim() || fallbackName,
+        mcVersion: versionGroup.getValue() || getLatestMinecraftVersion(),
         loader: loaderGroup.getValue(),
       });
       closeSidebarOverlays();
@@ -482,9 +489,10 @@
    * @param {string} label - Field label.
    * @param {string} type - Input type.
    * @param {string} value - Initial field value.
+   * @param {{placeholder?: string}} [options] - Optional input configuration.
    * @returns {{group: HTMLDivElement, input: HTMLInputElement}} Wrapped field references.
    */
-  function createInputGroup(label, type, value) {
+  function createInputGroup(label, type, value, options = {}) {
     const group = document.createElement("div");
     group.className = "form-group";
 
@@ -495,6 +503,7 @@
     const input = document.createElement("input");
     input.type = type;
     input.value = value;
+    input.placeholder = options.placeholder || "";
 
     group.append(labelElement, input);
     return { group, input };
@@ -505,9 +514,10 @@
    *
    * @param {string} label - Visible field label.
    * @param {string} value - Initial version value.
+   * @param {{autoDefault?: boolean}} [options] - Optional version-input behavior.
    * @returns {{group: HTMLDivElement, getValue: () => string}} Wrapped field references.
    */
-  function createMinecraftVersionGroup(label, value) {
+  function createMinecraftVersionGroup(label, value, options = {}) {
     const group = document.createElement("div");
     group.className = "form-group";
 
@@ -516,9 +526,12 @@
     labelElement.textContent = label;
 
     const input = document.createElement("input");
+    const initialValue = String(value || getLatestMinecraftVersion());
     input.type = "text";
-    input.value = value;
-    input.placeholder = "1.21.1";
+    input.value = initialValue;
+    input.placeholder = getLatestMinecraftVersion();
+    input.dataset.autoDefault = options.autoDefault ? "true" : "false";
+    input.dataset.autoDefaultValue = initialValue;
 
     const listId = `mc-version-options-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     input.setAttribute("list", listId);
@@ -526,7 +539,7 @@
     const datalist = document.createElement("datalist");
     datalist.id = listId;
     renderMinecraftVersionOptions(datalist);
-    void hydrateMinecraftVersions(datalist);
+    void hydrateMinecraftVersions(datalist, input);
 
     group.append(labelElement, input, datalist);
     return {
@@ -677,7 +690,7 @@
    */
   function renderMinecraftVersionOptions(datalist) {
     datalist.replaceChildren();
-    cachedMinecraftVersions.forEach((version) => {
+    getSortedMinecraftVersions(cachedMinecraftVersions).forEach((version) => {
       const option = document.createElement("option");
       option.value = version;
       datalist.appendChild(option);
@@ -688,8 +701,9 @@
    * Loads more Minecraft versions from the Modrinth tag list and merges them into local suggestions.
    *
    * @param {HTMLDataListElement} datalist - Target datalist to refresh.
+   * @param {HTMLInputElement} [input] - Optional linked input to keep on the newest default.
    */
-  async function hydrateMinecraftVersions(datalist) {
+  async function hydrateMinecraftVersions(datalist, input) {
     if (typeof getGameVersions !== "function") {
       return;
     }
@@ -700,11 +714,66 @@
         return;
       }
 
-      cachedMinecraftVersions = Array.from(new Set([...fetchedVersions, ...cachedMinecraftVersions]));
+      const previousLatest = getLatestMinecraftVersion();
+      cachedMinecraftVersions = getSortedMinecraftVersions([...fetchedVersions, ...cachedMinecraftVersions]);
       renderMinecraftVersionOptions(datalist);
+      const latestVersion = getLatestMinecraftVersion();
+      if (
+        input instanceof HTMLInputElement
+        && input.dataset.autoDefault === "true"
+        && (!input.value.trim() || input.value.trim() === input.dataset.autoDefaultValue || input.value.trim() === previousLatest)
+      ) {
+        input.value = latestVersion;
+        input.placeholder = latestVersion;
+        input.dataset.autoDefaultValue = latestVersion;
+      } else if (input instanceof HTMLInputElement) {
+        input.placeholder = latestVersion;
+      }
     } catch (error) {
       // Keep the local fallback list when Modrinth tags are unavailable.
     }
+  }
+
+  /**
+   * Returns Minecraft versions sorted from newest to oldest.
+   *
+   * @param {Array<string>} versions - Raw version list.
+   * @returns {Array<string>} Sorted and deduplicated versions.
+   */
+  function getSortedMinecraftVersions(versions) {
+    return Array.from(new Set((Array.isArray(versions) ? versions : []).filter(Boolean)))
+      .sort(compareMinecraftVersionsDesc);
+  }
+
+  /**
+   * Compares two stable release version labels in descending order.
+   *
+   * @param {string} left - Left version.
+   * @param {string} right - Right version.
+   * @returns {number} Sort order.
+   */
+  function compareMinecraftVersionsDesc(left, right) {
+    const leftParts = String(left || "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+    const rightParts = String(right || "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+    const maxLength = Math.max(leftParts.length, rightParts.length);
+
+    for (let index = 0; index < maxLength; index += 1) {
+      const difference = (rightParts[index] || 0) - (leftParts[index] || 0);
+      if (difference !== 0) {
+        return difference;
+      }
+    }
+
+    return 0;
+  }
+
+  /**
+   * Returns the newest known Minecraft version for profile defaults.
+   *
+   * @returns {string} Latest known version label.
+   */
+  function getLatestMinecraftVersion() {
+    return getSortedMinecraftVersions(cachedMinecraftVersions)[0] || DEFAULT_MC_VERSION;
   }
 
   /**
