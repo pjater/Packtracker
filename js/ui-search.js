@@ -665,25 +665,85 @@ function renderSourceToggle() {
     button.className = AppState.searchSource === source.value ? "source-toggle-btn active" : "source-toggle-btn";
     button.type = "button";
     button.textContent = source.label;
+    button.dataset.sourceValue = source.value;
     button.addEventListener("click", () => {
       if (AppState.searchSource !== source.value) {
-        setSearchState(
-          {
-            results: [],
-            offset: 0,
-            totalHits: 0,
-            loading: false,
-          },
-          { notify: false }
-        );
-        setSearchSource(source.value);
-        requestBrowseSearch();
+        animateSourceToggleChange(toggle, button, source.value);
       }
     });
     toggle.appendChild(button);
   });
 
+  queueSourceToggleIndicatorUpdate(toggle);
   return toggle;
+}
+
+/**
+ * Animates the browse-source switch before swapping search providers.
+ *
+ * @param {HTMLDivElement} toggle - Source toggle wrapper.
+ * @param {HTMLButtonElement} nextButton - Button that was selected.
+ * @param {"modrinth"|"curseforge"} nextSource - Next search source.
+ */
+function animateSourceToggleChange(toggle, nextButton, nextSource) {
+  if (!(toggle instanceof HTMLElement) || !(nextButton instanceof HTMLElement)) {
+    return;
+  }
+
+  if (toggle.dataset.switching === "true") {
+    return;
+  }
+
+  toggle.dataset.switching = "true";
+  toggle.classList.add("is-switching");
+  toggle.querySelectorAll(".source-toggle-btn").forEach((button) => {
+    button.classList.toggle("active", button === nextButton);
+  });
+  updateSourceToggleIndicator(toggle);
+
+  window.setTimeout(() => {
+    setSearchState(
+      {
+        results: [],
+        offset: 0,
+        totalHits: 0,
+        loading: false,
+      },
+      { notify: false }
+    );
+    setSearchSource(nextSource);
+    requestBrowseSearch();
+  }, 140);
+}
+
+/**
+ * Schedules the active source pill alignment after layout.
+ *
+ * @param {HTMLDivElement} toggle - Source toggle wrapper.
+ */
+function queueSourceToggleIndicatorUpdate(toggle) {
+  window.requestAnimationFrame(() => {
+    updateSourceToggleIndicator(toggle);
+  });
+}
+
+/**
+ * Aligns the animated source-toggle pill with the active button.
+ *
+ * @param {HTMLDivElement} toggle - Source toggle wrapper.
+ */
+function updateSourceToggleIndicator(toggle) {
+  if (!(toggle instanceof HTMLElement)) {
+    return;
+  }
+
+  const activeButton = toggle.querySelector(".source-toggle-btn.active");
+  if (!(activeButton instanceof HTMLElement)) {
+    return;
+  }
+
+  toggle.style.setProperty("--source-toggle-left", `${activeButton.offsetLeft}px`);
+  toggle.style.setProperty("--source-toggle-width", `${activeButton.offsetWidth}px`);
 }
 
 /**
