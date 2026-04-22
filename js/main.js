@@ -46,6 +46,7 @@
   let lastVisibleViewId = null;
 
   document.addEventListener("DOMContentLoaded", () => {
+    registerStandaloneAppSupport();
     void initializeApp();
   });
 
@@ -454,6 +455,21 @@
       window.history.replaceState({}, "", nextUrl);
       showToast(error instanceof Error ? error.message : "Invalid share link", "danger");
     }
+  }
+
+  /**
+   * Registers the service worker that makes the web build installable as a standalone app.
+   */
+  function registerStandaloneAppSupport() {
+    if (!("serviceWorker" in navigator) || !window.isSecureContext) {
+      return;
+    }
+
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js?v=20260422-1").catch((error) => {
+        console.warn("PackTracker: service worker registration failed", error);
+      });
+    }, { once: true });
   }
 
   Object.assign(window.PackTracker, {
