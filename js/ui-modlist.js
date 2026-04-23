@@ -31,6 +31,8 @@
     cfSearchProjects,
     initScanner,
     downloadFile,
+    downloadWithPreferences,
+    prepareDownloadWithPreferences,
   } = namespace;
   const HOME_VIEW_ID = "view-home";
   const MODAL_ROOT_ID = "modal-root";
@@ -70,6 +72,10 @@
   let downloadSession = null;
   let updateSession = null;
 
+  function translate(key, fallback) {
+    return typeof namespace.t === "function" ? namespace.t(key, fallback) : fallback;
+  }
+
 /**
  * Renders the full profile view for the currently active profile.
  */
@@ -93,11 +99,11 @@ function renderProfileView() {
 
     const icon = document.createElement("div");
     icon.className = "empty-state-icon";
-    icon.textContent = "⬡";
+    icon.appendChild(createStateLogoImage());
 
     const text = document.createElement("div");
     text.className = "empty-state-text";
-    text.textContent = "Choose a profile from the sidebar to manage mods, resource packs, and shaders.";
+    text.textContent = translate("noProfilesBody", "Create your first Minecraft profile and start collecting mods, resource packs, and shaders.");
 
     empty.append(icon, text);
     root.appendChild(empty);
@@ -133,7 +139,7 @@ function renderProfileView() {
     const headerActions = document.createElement("div");
     headerActions.className = "profile-header-actions";
 
-    const shareButton = createButton("Share profile");
+    const shareButton = createButton(translate("shareProfile", "Share profile"));
     shareButton.addEventListener("click", async () => {
       try {
         const shareLink = generateShareLink(profile.id);
@@ -148,7 +154,7 @@ function renderProfileView() {
       }
     });
 
-    const scanButton = createButton("Scan Minecraft Folder");
+    const scanButton = createButton(translate("scanMinecraftFolder", "Scan Minecraft Folder"));
     scanButton.addEventListener("click", () => {
       initScanner(profile.id);
     });
@@ -164,7 +170,7 @@ function renderProfileView() {
     const tab = document.createElement("button");
     tab.className = definition.key === AppState.activeTab ? "tab active" : "tab";
     tab.type = "button";
-    tab.textContent = definition.label;
+    tab.appendChild(createTabLabel(resolveTabLabel(definition.key)));
     tab.addEventListener("click", () => {
       setActiveTab(definition.key);
     });
@@ -210,16 +216,24 @@ function renderTabContent(tab) {
 
   const title = document.createElement("div");
   title.className = "helper-text";
+  const collectionLabel = resolveTabLabel(definition.key).toLowerCase();
   title.textContent = isFavoritesView
-    ? `Starred ${definition.label.toLowerCase()} from all profiles.`
-    : `Manage ${definition.label.toLowerCase()} for this profile.`;
+    ? translate("starredFromAllProfiles", `Starred ${collectionLabel} from all profiles.`).replace("{label}", collectionLabel)
+    : translate("manageForThisProfile", `Manage ${collectionLabel} for this profile.`).replace("{label}", collectionLabel);
 
   const buttons = document.createElement("div");
   buttons.className = "profile-toolbar";
   const isEditing = layoutEditState[tab];
 
   if (!isFavoritesView) {
-    const searchButton = createButton("+ Add via Browse", "btn-accent");
+    const searchButton = createButton(translate("addViaBrowse", "+ Add via Browse"), "btn-accent");
+    searchButton.replaceChildren(
+      createIconLabelContent(
+        "+",
+        translate("addViaBrowse", "+ Add via Browse").replace(/^\+\s*/, ""),
+        "btn-icon-plus"
+      )
+    );
     searchButton.addEventListener("click", () => {
       window.dispatchEvent(
         new CustomEvent("packtracker:open-search", {
@@ -232,22 +246,43 @@ function renderTabContent(tab) {
       );
     });
 
-    const manualButton = createButton("+ Add manually");
+    const manualButton = createButton(translate("addManually", "+ Add manually"));
+    manualButton.replaceChildren(
+      createIconLabelContent(
+        "+",
+        translate("addManually", "+ Add manually").replace(/^\+\s*/, ""),
+        "btn-icon-plus"
+      )
+    );
     manualButton.addEventListener("click", () => {
       const manualType = tab === "mods" ? "mod" : definition.projectType;
       showAddManualModal(profile.id, manualType);
     });
 
-    const updateButton = createButton("↻ Update to version");
+    const updateButton = createButton(translate("updateToVersion", "↻ Update to version"));
+    updateButton.replaceChildren(
+      createIconLabelContent(
+        "\u21bb",
+        translate("updateToVersion", "↻ Update to version").replace(/^[^\s]+\s*/, ""),
+        "btn-icon-refresh"
+      )
+    );
     updateButton.addEventListener("click", () => {
       showBulkUpdateModal(profile.id, tab);
     });
 
     const downloadButton = createButton(resolveDownloadButtonLabel(tab));
+    downloadButton.replaceChildren(
+      createIconLabelContent(
+        "\u2b07",
+        resolveDownloadButtonLabel(tab).replace(/^[^\s]+\s*/, ""),
+        "btn-icon-download-zip"
+      )
+    );
     downloadButton.addEventListener("click", async () => {
       downloadButton.disabled = true;
-      const originalLabel = downloadButton.textContent;
-      downloadButton.textContent = "Bundling...";
+      const originalLabel = resolveDownloadButtonLabel(tab).replace(/^[^\s]+\s*/, "");
+      downloadButton.textContent = translate("bundling", "Bundling...");
       try {
         await beginDownloadFlow(profile.id, tab);
       } catch (error) {
@@ -256,7 +291,13 @@ function renderTabContent(tab) {
         }
       } finally {
         downloadButton.disabled = false;
-        downloadButton.textContent = originalLabel;
+        downloadButton.replaceChildren(
+          createIconLabelContent(
+            "\u2b07",
+            originalLabel,
+            "btn-icon-download-zip"
+          )
+        );
       }
     });
 
@@ -267,7 +308,13 @@ function renderTabContent(tab) {
     editLayoutButton.className = isEditing
       ? "btn btn-primary btn-small"
       : "btn btn-small";
-    editLayoutButton.textContent = isEditing ? "\u2713 Done editing" : "\u270E Edit layout";
+    editLayoutButton.replaceChildren(
+      createIconLabelContent(
+        isEditing ? "\u2713" : "\u270E",
+        isEditing ? translate("doneEditing", "Done editing") : translate("editLayout", "Edit layout"),
+        isEditing ? "btn-icon-check" : "btn-icon-pencil"
+      )
+    );
     editLayoutButton.addEventListener("click", () => {
       layoutEditState[tab] = !layoutEditState[tab];
       const root = document.getElementById(HOME_VIEW_ID);
@@ -1247,31 +1294,43 @@ function createEmptyState(definition) {
 
   const icon = document.createElement("div");
   icon.className = "empty-state-icon";
-  icon.textContent = "◻";
+  icon.appendChild(createStateLogoImage());
 
   const title = document.createElement("div");
   title.className = "empty-state-title";
   title.textContent = definition.key === "mods"
-    ? "No mods yet"
+    ? translate("noModsYet", "No mods yet")
     : definition.key === "resourcepacks"
-      ? "No resource packs yet"
-      : "No shaders yet";
+      ? translate("noResourcePacksYet", "No resource packs yet")
+      : translate("noShadersYet", "No shaders yet");
 
   const text = document.createElement("div");
   text.className = "empty-state-text";
   text.textContent = definition.key === "mods"
-    ? "Browse projects or add your first mod manually."
+    ? translate("emptyModsText", "Browse projects or add your first mod manually.")
     : definition.key === "resourcepacks"
-      ? "Browse projects or add your first resource pack manually."
-      : "Browse projects or add your first shader manually.";
+      ? translate("emptyResourcePacksText", "Browse projects or add your first resource pack manually.")
+      : translate("emptyShadersText", "Browse projects or add your first shader manually.");
 
   const button = createButton(
     definition.key === "mods"
-      ? "+ Add mod"
+      ? translate("addMod", "+ Add mod")
       : definition.key === "resourcepacks"
-        ? "+ Add resource pack"
-        : "+ Add shader",
+        ? translate("addResourcePack", "+ Add resource pack")
+        : translate("addShader", "+ Add shader"),
     "btn-primary"
+  );
+  const addLabel = definition.key === "mods"
+    ? translate("addMod", "+ Add mod")
+    : definition.key === "resourcepacks"
+      ? translate("addResourcePack", "+ Add resource pack")
+      : translate("addShader", "+ Add shader");
+  button.replaceChildren(
+    createIconLabelContent(
+      "+",
+      addLabel.replace(/^\+\s*/, ""),
+      "btn-icon-plus"
+    )
   );
   button.addEventListener("click", () => {
     window.dispatchEvent(
@@ -1296,7 +1355,7 @@ function createEmptyState(definition) {
  * @returns {string} Button label.
  */
 function resolveDownloadButtonLabel(tab) {
-  return "⬇ Download as ZIP";
+  return translate("downloadAsZip", "⬇ Download as ZIP");
 }
 
 /**
@@ -1911,7 +1970,15 @@ async function beginDownloadFlow(profileId, tab) {
     return;
   }
 
-  await downloadCategoryAsZip(getTabItems(profile, tab), resolveZipFolderName(tab), profile.name);
+  const suggestedName = `${sanitizeFileName(profile.name)}-${resolveZipFolderName(tab)}.zip`;
+  const preparedDownload = typeof prepareDownloadWithPreferences === "function"
+    ? await prepareDownloadWithPreferences(suggestedName)
+    : null;
+  if (preparedDownload?.mode === "cancelled") {
+    return;
+  }
+
+  await downloadCategoryAsZip(getTabItems(profile, tab), resolveZipFolderName(tab), profile.name, preparedDownload);
 }
 
 /**
@@ -1921,7 +1988,7 @@ async function beginDownloadFlow(profileId, tab) {
  * @param {string} categoryFolderName - Folder name inside the ZIP.
  * @param {string} profileName - Profile label used in the ZIP filename.
  */
-async function downloadCategoryAsZip(items, categoryFolderName, profileName) {
+async function downloadCategoryAsZip(items, categoryFolderName, profileName, preparedDownload = null) {
   if (typeof window.JSZip !== "function") {
     throw new Error("JSZip is not available.");
   }
@@ -1991,8 +2058,17 @@ async function downloadCategoryAsZip(items, categoryFolderName, profileName) {
 
   const archiveBlob = await zip.generateAsync({ type: "blob" });
   const objectUrl = URL.createObjectURL(archiveBlob);
+  let downloadResult = { mode: "ask" };
   try {
-    await downloadFile(objectUrl, `${sanitizeFileName(profileName)}-${categoryFolderName}.zip`);
+    if (typeof downloadWithPreferences === "function") {
+      downloadResult = await downloadWithPreferences(
+        objectUrl,
+        `${sanitizeFileName(profileName)}-${categoryFolderName}.zip`,
+        preparedDownload?.saveHandle ? { saveHandle: preparedDownload.saveHandle } : undefined
+      );
+    } else {
+      await downloadFile(objectUrl, `${sanitizeFileName(profileName)}-${categoryFolderName}.zip`);
+    }
   } finally {
     window.setTimeout(() => {
       URL.revokeObjectURL(objectUrl);
@@ -2001,6 +2077,10 @@ async function downloadCategoryAsZip(items, categoryFolderName, profileName) {
 
   if (withoutUrl.length > 0 && typeof namespace.showToast === "function") {
     namespace.showToast(`${withoutUrl.length} items have no direct download link and were skipped.`, "warning");
+  }
+
+  if (downloadResult.mode === "cancelled") {
+    return;
   }
 
   if (typeof namespace.showToast === "function") {
@@ -2030,18 +2110,29 @@ async function runDownloadQueue() {
     }
 
     row.status = DOWNLOAD_ROW_STATES.DOWNLOADING;
-    row.message = "sending to browser...";
+    row.message = "preparing download...";
     row.fileName = resolved.filename;
     row.sizeLabel = resolved.sizeLabel;
     renderDownloadProgressModal();
 
     try {
-      await downloadFile(resolved.url, resolved.filename);
+      let downloadResult = { mode: "ask" };
+      if (typeof downloadWithPreferences === "function") {
+        downloadResult = await downloadWithPreferences(resolved.url, resolved.filename);
+      } else {
+        await downloadFile(resolved.url, resolved.filename);
+      }
+      if (downloadResult.mode === "cancelled") {
+        row.status = DOWNLOAD_ROW_STATES.QUEUED;
+        row.message = "cancelled";
+        renderDownloadProgressModal();
+        continue;
+      }
       row.status = DOWNLOAD_ROW_STATES.DONE;
-      row.message = "download started";
+      row.message = "download sent";
       downloadSession.completed += 1;
       if (typeof namespace.showToast === "function") {
-        namespace.showToast(`Started download for ${resolved.filename}`, "success");
+        namespace.showToast(`Download sent for ${resolved.filename}`, "success");
       }
     } catch (error) {
       row.status = DOWNLOAD_ROW_STATES.ERROR;
@@ -2474,6 +2565,13 @@ async function resolveZipDownloadTarget(item) {
  * @returns {Promise<boolean>} True when a download was started.
  */
 async function startTrackedItemDownload(item) {
+  const preparedDownload = typeof prepareDownloadWithPreferences === "function"
+    ? await prepareDownloadWithPreferences(resolveTrackedItemSuggestedFileName(item))
+    : null;
+  if (preparedDownload?.mode === "cancelled") {
+    return false;
+  }
+
   const target = await resolveZipDownloadTarget(item);
   if (!target.url) {
     if (typeof namespace.showToast === "function") {
@@ -2482,14 +2580,72 @@ async function startTrackedItemDownload(item) {
     return false;
   }
 
-  if (typeof downloadFile === "function") {
+  let downloadResult = { mode: "ask" };
+  if (typeof downloadWithPreferences === "function") {
+    downloadResult = await downloadWithPreferences(
+      target.url,
+      target.filename,
+      preparedDownload?.saveHandle ? { saveHandle: preparedDownload.saveHandle } : undefined
+    );
+  } else if (typeof downloadFile === "function") {
     await downloadFile(target.url, target.filename);
   } else {
     window.open(target.url, "_blank", "noopener");
   }
 
+  if (downloadResult.mode === "cancelled") {
+    return false;
+  }
+
   if (typeof namespace.showToast === "function") {
     namespace.showToast(`Download started for ${item?.name || "item"}`, "success");
+  }
+  return true;
+}
+
+/**
+ * Builds a filename suggestion before an item's real download URL has been resolved.
+ *
+ * @param {object} item - Stored tracked item.
+ * @returns {string} Suggested filename.
+ */
+function resolveTrackedItemSuggestedFileName(item) {
+  return String(item?.fileName || item?.versionFileName || "").trim()
+    || `${sanitizeFileName(item?.name || item?.slug || "download")}.jar`;
+}
+
+/**
+ * Switches one tracked item to the alternate supported provider when a match exists.
+ *
+ * @param {object} item - Stored tracked item.
+ * @param {string} profileId - Profile identifier.
+ * @param {"mod"|"resourcepack"|"shader"} type - Item type.
+ * @param {"modrinth"|"curseforge"} nextSource - Target provider.
+ * @returns {Promise<boolean>} True when the item was switched.
+ */
+async function switchTrackedItemProvider(item, profileId, type, nextSource) {
+  const profile = AppState.data?.profiles.find((entry) => entry.id === profileId);
+  if (!profile) {
+    return false;
+  }
+
+  const projectType = type === "mod" ? "mod" : type;
+  const tab = type === "mod" ? "mods" : type === "resourcepack" ? "resourcepacks" : "shaders";
+  const candidate = await resolveBulkUpdateCandidateForSource(item, tab, profile.mcVersion, profile, projectType, nextSource);
+  if (!candidate || candidate.kind !== "update" || !candidate.project || !candidate.version) {
+    if (typeof namespace.showToast === "function") {
+      namespace.showToast(candidate?.message || `No ${resolveSourceLabel(nextSource)} match found`, "warning");
+    }
+    return false;
+  }
+
+  const updatedItem = applyBulkUpdateToItem(item, candidate.project, candidate.version, tab);
+  showCompatibilityWarnings(updatedItem, profile);
+  if (typeof notifyStateChanged === "function") {
+    notifyStateChanged("switch-provider");
+  }
+  if (typeof namespace.showToast === "function") {
+    namespace.showToast(`Switched ${item.name || "item"} to ${resolveSourceLabel(nextSource)}.`, "success");
   }
   return true;
 }
@@ -2696,6 +2852,36 @@ function showItemMenu(item, profileId, type, x, y) {
     }
   });
   menu.appendChild(downloadItem);
+
+  const alternateSource = item.source === "curseforge"
+    ? "modrinth"
+    : item.source === "modrinth"
+      ? "curseforge"
+      : "";
+  if (alternateSource) {
+    const switchLabel = translate("switchToProviderExperimental", "Switch to {source}")
+      .replace("{source}", resolveSourceLabel(alternateSource));
+    const switchItem = createContextItem(createExperimentalContextLabel(switchLabel), async () => {
+      switchItem.disabled = true;
+      switchItem.textContent = "Switching...";
+      try {
+        const switched = await switchTrackedItemProvider(item, profileId, type, alternateSource);
+        if (switched) {
+          closeContextMenu(root);
+        } else {
+          switchItem.disabled = false;
+          switchItem.replaceChildren(createExperimentalContextLabel(switchLabel));
+        }
+      } catch (error) {
+        switchItem.disabled = false;
+        switchItem.replaceChildren(createExperimentalContextLabel(switchLabel));
+        if (typeof namespace.showToast === "function") {
+          namespace.showToast(error instanceof Error ? error.message : "Provider switch failed", "danger");
+        }
+      }
+    });
+    menu.appendChild(switchItem);
+  }
 
   menu.appendChild(
     createContextItem("Remove from profile", () => {
@@ -3099,12 +3285,74 @@ function createViewToggle(scope) {
     button.textContent = mode === "list" ? "☰" : "⊞";
     button.setAttribute("aria-label", mode === "list" ? "List view" : "Grid view");
     button.addEventListener("click", () => {
-      setViewMode(scope, mode);
+      if (getViewMode(scope) !== mode) {
+        animateViewToggleChange(group, button, scope, mode);
+      }
     });
     group.appendChild(button);
   });
 
+  queueViewToggleIndicatorUpdate(group);
   return group;
+}
+
+/**
+ * Animates the profile layout switch before committing the next view mode.
+ *
+ * @param {HTMLDivElement} toggle - View-toggle wrapper.
+ * @param {HTMLButtonElement} nextButton - Newly selected toggle button.
+ * @param {"mods"|"resourcepacks"|"shaders"} scope - View-mode scope.
+ * @param {"list"|"grid"} nextMode - Next layout mode.
+ */
+function animateViewToggleChange(toggle, nextButton, scope, nextMode) {
+  if (!(toggle instanceof HTMLElement) || !(nextButton instanceof HTMLElement)) {
+    return;
+  }
+
+  if (toggle.dataset.switching === "true") {
+    return;
+  }
+
+  toggle.dataset.switching = "true";
+  toggle.classList.add("is-switching");
+  toggle.querySelectorAll(".view-toggle-btn").forEach((button) => {
+    button.classList.toggle("active", button === nextButton);
+  });
+  updateViewToggleIndicator(toggle);
+
+  window.setTimeout(() => {
+    setViewMode(scope, nextMode);
+  }, 140);
+}
+
+/**
+ * Schedules alignment of the active view-toggle pill after layout.
+ *
+ * @param {HTMLDivElement} toggle - View-toggle wrapper.
+ */
+function queueViewToggleIndicatorUpdate(toggle) {
+  window.requestAnimationFrame(() => {
+    updateViewToggleIndicator(toggle);
+  });
+}
+
+/**
+ * Aligns the animated view-toggle pill with the active layout button.
+ *
+ * @param {HTMLDivElement} toggle - View-toggle wrapper.
+ */
+function updateViewToggleIndicator(toggle) {
+  if (!(toggle instanceof HTMLElement)) {
+    return;
+  }
+
+  const activeButton = toggle.querySelector(".view-toggle-btn.active");
+  if (!(activeButton instanceof HTMLElement)) {
+    return;
+  }
+
+  toggle.style.setProperty("--view-toggle-left", `${activeButton.offsetLeft}px`);
+  toggle.style.setProperty("--view-toggle-width", `${activeButton.offsetWidth}px`);
 }
 
 /**
@@ -3141,6 +3389,20 @@ function createButton(text, modifier) {
 }
 
 /**
+ * Creates the PackTracker logo node for welcome and empty states.
+ *
+ * @returns {HTMLImageElement} Logo image element.
+ */
+function createStateLogoImage() {
+  const image = document.createElement("img");
+  image.className = "state-logo";
+  image.src = "./assets/logo.png?v=20260420-1";
+  image.alt = "";
+  image.draggable = false;
+  return image;
+}
+
+/**
  * Creates a badge using the shared badge classes.
  *
  * @param {string} modifier - Modifier class.
@@ -3168,6 +3430,59 @@ function createLoaderBadge(loader) {
     return createBadge("badge-vanilla", "Vanilla");
   }
   return createBadge(`badge-${loader}`, capitalize(loader));
+}
+
+/**
+ * Resolves the localized label for one collection tab.
+ *
+ * @param {"mods"|"resourcepacks"|"shaders"} tabKey - Tab identifier.
+ * @returns {string} User-facing label.
+ */
+function resolveTabLabel(tabKey) {
+  if (tabKey === "resourcepacks") {
+    return translate("resourcePacks", "Resource Packs");
+  }
+  if (tabKey === "shaders") {
+    return translate("shaders", "Shaders");
+  }
+  return translate("mods", "Mods");
+}
+
+/**
+ * Creates one tab label wrapper for hover animation targeting.
+ *
+ * @param {string} text - Visible tab text.
+ * @returns {HTMLSpanElement} Label span.
+ */
+function createTabLabel(text) {
+  const label = document.createElement("span");
+  label.className = "tab-label";
+  label.textContent = text;
+  return label;
+}
+
+/**
+ * Creates shared button content with a separately animatable icon span.
+ *
+ * @param {string} icon - Visible icon.
+ * @param {string} label - Visible label.
+ * @param {string} iconClass - Extra icon class.
+ * @returns {HTMLSpanElement} Content wrapper.
+ */
+function createIconLabelContent(icon, label, iconClass) {
+  const content = document.createElement("span");
+  content.className = "btn-content";
+
+  const iconElement = document.createElement("span");
+  iconElement.className = iconClass ? `btn-icon ${iconClass}` : "btn-icon";
+  iconElement.textContent = icon;
+
+  const labelElement = document.createElement("span");
+  labelElement.className = "btn-label";
+  labelElement.textContent = label;
+
+  content.append(iconElement, labelElement);
+  return content;
 }
 
 /**
@@ -3377,9 +3692,34 @@ function createContextItem(text, onClick, danger = false) {
   const item = document.createElement("button");
   item.className = danger ? "context-menu-item danger" : "context-menu-item";
   item.type = "button";
-  item.textContent = text;
+  if (text instanceof Node) {
+    item.appendChild(text);
+  } else {
+    item.textContent = text;
+  }
   item.addEventListener("click", onClick);
   return item;
+}
+
+/**
+ * Builds a context-menu label with a trailing Experimental tag.
+ *
+ * @param {string} text - Main action label.
+ * @returns {HTMLSpanElement} Label wrapper.
+ */
+function createExperimentalContextLabel(text) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "context-menu-item-label";
+
+  const label = document.createElement("span");
+  label.textContent = text;
+
+  const tag = document.createElement("span");
+  tag.className = "experimental-tag";
+  tag.textContent = "Experimental";
+
+  wrapper.append(label, tag);
+  return wrapper;
 }
 
 /**
