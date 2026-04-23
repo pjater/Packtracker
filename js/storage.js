@@ -3,9 +3,14 @@
   const { AppState, notifyStateChanged } = namespace;
   const LOCAL_STORAGE_KEY = "packtracker_profiles_v2";
   const LEGACY_STORAGE_KEYS = ["packtracker_profiles_v1", "packtracker_v1"];
+  const SETTINGS_STORAGE_KEY = "packtracker_app_settings_v1";
   const DATA_VERSION = 2;
   const RANDOM_ID_LENGTH = 4;
   const COPY_SUFFIX = " (copy)";
+  const SUPPORTED_LANGUAGES = ["en", "zh", "hi", "es", "ar"];
+  const SUPPORTED_THEMES = ["dark", "light", "system"];
+  const SUPPORTED_DOWNLOAD_BEHAVIORS = ["ask", "default"];
+  const SUPPORTED_FONT_STYLES = ["default", "manrope", "poppins", "serif", "monospace"];
 
   /**
    * Loads persisted PackTracker data and normalizes the result.
@@ -19,6 +24,86 @@
       console.warn("PackTracker: failed to load storage", error);
       return createEmptyData();
     }
+  }
+
+  /**
+   * Loads persisted app-wide preferences from localStorage.
+   *
+   * @returns {object} Normalized settings payload.
+   */
+  function loadAppSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      if (!raw) {
+        return createDefaultAppSettings();
+      }
+      return normalizeAppSettings(JSON.parse(raw));
+    } catch (error) {
+      console.warn("PackTracker: failed to load app settings", error);
+      return createDefaultAppSettings();
+    }
+  }
+
+  /**
+   * Persists app-wide preferences to localStorage and state.
+   *
+   * @param {object} settings - Next settings snapshot.
+   * @returns {object} Normalized stored settings.
+   */
+  function saveAppSettings(settings) {
+    const normalized = normalizeAppSettings(settings);
+    AppState.settings = normalized;
+    try {
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(normalized));
+    } catch (error) {
+      console.warn("PackTracker: failed to persist app settings", error);
+    }
+    return normalized;
+  }
+
+  /**
+   * Applies a partial patch to app settings and notifies listeners.
+   *
+   * @param {object} patch - Partial settings patch.
+   * @returns {object} Updated settings snapshot.
+   */
+  function updateAppSettings(patch) {
+    const nextSettings = saveAppSettings({
+      ...loadAppSettings(),
+      ...patch,
+    });
+    if (typeof notifyStateChanged === "function") {
+      notifyStateChanged("settings");
+    }
+    return nextSettings;
+  }
+
+  /**
+   * Resets app settings to defaults.
+   *
+   * @returns {object} Reset settings snapshot.
+   */
+  function resetAppSettings() {
+    const reset = saveAppSettings(createDefaultAppSettings());
+    if (typeof notifyStateChanged === "function") {
+      notifyStateChanged("settings-reset");
+    }
+    return reset;
+  }
+
+  /**
+   * Records one app visit/open event for update prompts and onboarding logic.
+   *
+   * @returns {object} Updated settings snapshot.
+   */
+  function recordAppVisit() {
+    const current = loadAppSettings();
+    return saveAppSettings({
+      ...current,
+      visitCount: Number(current.visitCount || 0) + 1,
+      lastOpenedAt: Date.now(),
+      firstOpenedAt: Number(current.firstOpenedAt || 0) || Date.now(),
+    });
   }
 
   /**
@@ -399,6 +484,58 @@
   }
 
   /**
+   * Creates the default app-settings payload.
+   *
+   * @returns {object} Default settings object.
+   */
+  function createDefaultAppSettings() {
+    return normalizeAppSettings({
+      language: inferDefaultLanguage(),
+      theme: "dark",
+      accentColor: "#1ad969",
+      blurStrength: 8,
+      reduceMotion: false,
+      fontStyle: "default",
+      highContrast: false,
+      roundedCorners: 12,
+      defaultDownloadDirectoryName: "",
+      downloadBehavior: "ask",
+      seenReleaseNotesVersion: "",
+      onboardingCompleted: false,
+      visitCount: 0,
+      firstOpenedAt: 0,
+      lastOpenedAt: 0,
+    });
+  }
+
+  /**
+   * Normalizes the stored app-settings payload.
+   *
+   * @param {unknown} settings - Raw settings payload.
+   * @returns {object} Normalized settings.
+   */
+  function normalizeAppSettings(settings) {
+    const value = settings && typeof settings === "object" ? settings : {};
+    return {
+      language: normalizeLanguage(value.language),
+      theme: normalizeTheme(value.theme),
+      accentColor: normalizeAccentColor(value.accentColor),
+      blurStrength: normalizeBlurStrength(value.blurStrength),
+      reduceMotion: Boolean(value.reduceMotion),
+      fontStyle: normalizeFontStyle(value.fontStyle),
+      highContrast: Boolean(value.highContrast),
+      roundedCorners: normalizeRoundedCorners(value.roundedCorners),
+      defaultDownloadDirectoryName: String(value.defaultDownloadDirectoryName || "").trim(),
+      downloadBehavior: normalizeDownloadBehavior(value.downloadBehavior),
+      seenReleaseNotesVersion: String(value.seenReleaseNotesVersion || "").trim(),
+      onboardingCompleted: Boolean(value.onboardingCompleted),
+      visitCount: Math.max(0, Number(value.visitCount || 0) || 0),
+      firstOpenedAt: Math.max(0, Number(value.firstOpenedAt || 0) || 0),
+      lastOpenedAt: Math.max(0, Number(value.lastOpenedAt || 0) || 0),
+    };
+  }
+
+  /**
    * Ensures there is an in-memory data object ready for mutations.
    *
    * @returns {{version:number, profiles:Array<object>}} Active storage data.
@@ -408,6 +545,114 @@
       AppState.data = createEmptyData();
     }
     return AppState.data;
+  }
+
+  /**
+   * Normalizes the language setting to one of the supported codes.
+   *
+   * @param {unknown} language - Language candidate.
+   * @returns {"en"|"zh"|"hi"|"es"|"ar"} Normalized language code.
+   */
+  function normalizeLanguage(language) {
+    const value = String(language || inferDefaultLanguage()).trim().toLowerCase();
+    if (SUPPORTED_LANGUAGES.includes(value)) {
+      return value;
+    }
+    return inferDefaultLanguage();
+  }
+
+  /**
+   * Normalizes the theme setting.
+   *
+   * @param {unknown} theme - Theme candidate.
+   * @returns {"dark"|"light"|"system"} Normalized theme.
+   */
+  function normalizeTheme(theme) {
+    const value = String(theme || "dark").trim().toLowerCase();
+    return SUPPORTED_THEMES.includes(value) ? value : "dark";
+  }
+
+  /**
+   * Normalizes the preferred download behavior.
+   *
+   * @param {unknown} behavior - Download-behavior candidate.
+   * @returns {"ask"|"default"} Normalized behavior value.
+   */
+  function normalizeDownloadBehavior(behavior) {
+    const value = String(behavior || "ask").trim().toLowerCase();
+    return SUPPORTED_DOWNLOAD_BEHAVIORS.includes(value) ? value : "ask";
+  }
+
+  /**
+   * Normalizes the configured accent color.
+   *
+   * @param {unknown} color - Accent color candidate.
+   * @returns {string} Safe hex color.
+   */
+  function normalizeAccentColor(color) {
+    const value = String(color || "#1ad969").trim();
+    return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : "#1ad969";
+  }
+
+  /**
+   * Normalizes the configured blur strength.
+   *
+   * @param {unknown} blurStrength - Blur candidate.
+   * @returns {number} Safe blur pixel value.
+   */
+  function normalizeBlurStrength(blurStrength) {
+    const numeric = Number(blurStrength);
+    if (!Number.isFinite(numeric)) {
+      return 8;
+    }
+    return Math.min(24, Math.max(0, Math.round(numeric)));
+  }
+
+  /**
+   * Normalizes the selected font style.
+   *
+   * @param {unknown} fontStyle - Font-style candidate.
+   * @returns {"default"|"monospace"} Safe font style.
+   */
+  function normalizeFontStyle(fontStyle) {
+    const value = String(fontStyle || "default").trim().toLowerCase();
+    return SUPPORTED_FONT_STYLES.includes(value) ? value : "default";
+  }
+
+  /**
+   * Normalizes the rounded-corner setting.
+   *
+   * @param {unknown} roundedCorners - Radius candidate.
+   * @returns {number} Safe corner radius.
+   */
+  function normalizeRoundedCorners(roundedCorners) {
+    const numeric = Number(roundedCorners);
+    if (!Number.isFinite(numeric)) {
+      return 12;
+    }
+    return Math.min(24, Math.max(0, Math.round(numeric)));
+  }
+
+  /**
+   * Infers the closest supported UI language from the browser locale.
+   *
+   * @returns {"en"|"zh"|"hi"|"es"|"ar"} Supported language code.
+   */
+  function inferDefaultLanguage() {
+    const locale = String(window.navigator?.language || "en").toLowerCase();
+    if (locale.startsWith("zh")) {
+      return "zh";
+    }
+    if (locale.startsWith("hi")) {
+      return "hi";
+    }
+    if (locale.startsWith("es")) {
+      return "es";
+    }
+    if (locale.startsWith("ar")) {
+      return "ar";
+    }
+    return "en";
   }
 
   /**
@@ -858,6 +1103,11 @@
   Object.assign(namespace, {
     loadData,
     saveData,
+    loadAppSettings,
+    saveAppSettings,
+    updateAppSettings,
+    resetAppSettings,
+    recordAppVisit,
     createProfile,
     duplicateProfile,
     deleteProfile,
