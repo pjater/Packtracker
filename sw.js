@@ -1,8 +1,8 @@
-const CACHE_NAME = "packtracker-shell-v20260423-13";
+const CACHE_NAME = "packtracker-shell-v20260423-14";
 const APP_SHELL_FILES = [
   "./",
   "./index.html",
-  "./css/style.css?v=20260423-13",
+  "./css/style.css?v=20260423-14",
   "./js/drag-order.js?v=20260420-1",
   "./js/platform.js?v=20260422-5",
   "./js/state.js?v=20260422-2",
@@ -16,7 +16,7 @@ const APP_SHELL_FILES = [
   "./js/ui-share.js?v=20260422-5",
   "./js/ui-search.js?v=20260423-13",
   "./js/scanner.js?v=20260423-2",
-  "./js/main.js?v=20260423-13",
+  "./js/main.js?v=20260423-14",
   "./assets/logo.png?v=20260420-1",
   "./manifest.webmanifest?v=20260422-1"
 ];
@@ -46,6 +46,23 @@ self.addEventListener("fetch", (event) => {
 
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) {
+    return;
+  }
+
+  if (event.request.mode === "navigate" || requestUrl.pathname.endsWith("/index.html")) {
+    event.respondWith(
+      fetch(event.request).then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put("./index.html", responseClone);
+          });
+        }
+        return networkResponse;
+      }).catch(async () => {
+        return caches.match("./index.html");
+      })
+    );
     return;
   }
 
