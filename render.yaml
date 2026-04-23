@@ -9,5 +9,5 @@ services:
         value: no-cache
     routes:
       - type: rewrite
-        source: /(?!.*\\.\\w+$|.*\\/$)(.*)$
+        source: "^(?!.*\\.(js|css|png|jpg|jpeg|gif|svg|ico|webp|woff|woff2|ttf|eot|json|webmanifest)$).*$"
         destination: /index.html
