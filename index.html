@@ -15,6 +15,14 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <link rel="stylesheet" href="./css/style.css?v=20260423-13">
+  <script>
+    window.addEventListener('error', (event) => {
+      console.error('JavaScript Error:', event.error);
+    });
+    window.addEventListener('unhandledrejection', (event) => {
+      console.error('Unhandled Promise Rejection:', event.reason);
+    });
+  </script>
 </head>
 <body>
   <div id="app" class="app-wrapper">

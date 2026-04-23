@@ -1,9 +1,0 @@
-# Allow all static assets to load normally
-/js/*                200
-/css/*               200
-/assets/*            200
-/*.json              200
-/*.webmanifest       200
-
-# Redirect all other routes to index.html for client-side routing
-/*                   /index.html  200
