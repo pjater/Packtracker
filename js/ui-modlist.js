@@ -19,6 +19,7 @@
     updateMod,
     updateResourcePack,
     updateShader,
+    updateAppSettings,
     generateShareLink,
     getDependencies,
     getProject,
@@ -71,6 +72,11 @@
   let activeListDragHandle = null;
   let downloadSession = null;
   let updateSession = null;
+  const UPDATE_PROVIDER_PREFERENCES = [
+    { value: "auto", label: "Auto" },
+    { value: "modrinth", label: "Prefer Modrinth" },
+    { value: "curseforge", label: "Prefer CurseForge" },
+  ];
 
   function translate(key, fallback) {
     return typeof namespace.t === "function" ? namespace.t(key, fallback) : fallback;
@@ -1369,6 +1375,7 @@ function showBulkUpdateModal(profileId, tab) {
   if (!profile) {
     return;
   }
+  const updatePreference = resolveUpdateProviderPreference();
 
   const overlay = createModalOverlay();
   const modal = createModalCard();
@@ -1394,6 +1401,23 @@ function showBulkUpdateModal(profileId, tab) {
     ? `Mods will be matched against ${capitalize(profile.loader)} and the target Minecraft version.`
     : "Resource packs and shaders will be matched against the chosen Minecraft version when possible.";
 
+  const preferenceNote = document.createElement("div");
+  preferenceNote.className = "modal-subtitle";
+  preferenceNote.textContent = `Provider preference: ${resolveUpdatePreferenceLabel(updatePreference)}.`;
+
+  const preferenceButton = createButton(resolveUpdatePreferenceButtonLabel(), "btn-small");
+  preferenceButton.addEventListener("click", () => {
+    closeOverlays();
+    showUpdateProviderPreferenceModal({
+      onClose() {
+        showBulkUpdateModal(profileId, tab);
+      },
+    });
+  });
+
+  const preferenceActions = createActionRow();
+  preferenceActions.appendChild(preferenceButton);
+
   const actions = createActionRow();
   const cancelButton = createButton("Cancel");
   const startButton = createButton("Start update", "btn-primary");
@@ -1405,7 +1429,7 @@ function showBulkUpdateModal(profileId, tab) {
   });
 
   actions.append(cancelButton, startButton);
-  modal.append(title, subtitle, versionGroup.group, presets, note, actions);
+  modal.append(title, subtitle, versionGroup.group, presets, note, preferenceNote, preferenceActions, actions);
   overlay.appendChild(modal);
   mountModal(overlay);
 }
@@ -1523,15 +1547,19 @@ async function resolveBulkUpdateCandidate(item, tab, targetVersion, profile) {
   }
 
   const projectType = tab === "resourcepacks" ? "resourcepack" : tab === "shaders" ? "shader" : "mod";
-  const sourcesToTry = Array.from(new Set([item.source || "modrinth", "modrinth", "curseforge"]))
-    .filter((source) => source !== "manual");
+  const updatePreference = resolveUpdateProviderPreference();
+  const preferredSource = updatePreference === "auto" ? (item.source || "modrinth") : updatePreference;
+  const sourcesToTry = resolveBulkUpdateSources(item, updatePreference);
   let bestCandidate = null;
   let fallbackMessage = "No versions found";
 
   for (const source of sourcesToTry) {
     const candidate = await resolveBulkUpdateCandidateForSource(item, tab, targetVersion, profile, projectType, source);
     if (candidate.kind === "update") {
-      if (!bestCandidate || compareBulkUpdateCandidates(candidate, bestCandidate, item.source || "modrinth") < 0) {
+      if (source === preferredSource) {
+        return candidate;
+      }
+      if (!bestCandidate || compareBulkUpdateCandidates(candidate, bestCandidate, preferredSource) < 0) {
         bestCandidate = candidate;
       }
       continue;
@@ -1649,6 +1677,9 @@ async function resolveBulkUpdateProjectForSource(item, projectType, profile, sou
     }
 
     response.hits.slice(0, 5).forEach((project) => {
+      if (source !== currentSource && !isSafeCrossSourceProjectMatch(item, project)) {
+        return;
+      }
       const score = scoreProjectSearchMatch(item, project);
       if (score > bestScore) {
         bestScore = score;
@@ -1705,6 +1736,30 @@ function scoreProjectSearchMatch(item, project) {
 }
 
 /**
+ * Returns true only when a cross-provider search result is a strong enough match
+ * to safely replace the tracked project.
+ *
+ * @param {object} item - Stored tracked item.
+ * @param {object} project - Candidate search result.
+ * @returns {boolean} True when the match is safe enough to use across providers.
+ */
+function isSafeCrossSourceProjectMatch(item, project) {
+  const itemSlug = normalizeProjectIdentityValue(item?.slug || "");
+  const projectSlug = normalizeProjectIdentityValue(project?.slug || "");
+  if (itemSlug && projectSlug) {
+    return itemSlug === projectSlug;
+  }
+
+  const itemName = normalizeProjectIdentityValue(item?.name || "");
+  const projectName = normalizeProjectIdentityValue(project?.title || project?.name || "");
+  if (itemName && projectName) {
+    return itemName === projectName;
+  }
+
+  return false;
+}
+
+/**
  * Compares two source candidates so the best overall update wins.
  *
  * @param {{source:string, version:object}} left - Candidate A.
@@ -1729,6 +1784,21 @@ function compareBulkUpdateCandidates(left, right, preferredSource) {
 }
 
 /**
+ * Returns the ordered source list used for bulk updates.
+ *
+ * @param {object} item - Stored tracked item.
+ * @param {"auto"|"modrinth"|"curseforge"} updatePreference - Saved preference.
+ * @returns {Array<"modrinth"|"curseforge">} Ordered source candidates.
+ */
+function resolveBulkUpdateSources(item, updatePreference) {
+  const currentSource = item.source || "modrinth";
+  const orderedSources = updatePreference === "auto"
+    ? [currentSource, "modrinth", "curseforge"]
+    : [updatePreference, currentSource, "modrinth", "curseforge"];
+  return Array.from(new Set(orderedSources)).filter((source) => source === "modrinth" || source === "curseforge");
+}
+
+/**
  * Normalizes text for loose project-name comparisons.
  *
  * @param {string} value - Raw label.
@@ -1739,6 +1809,18 @@ function normalizeProjectSearchText(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+/**
+ * Normalizes a project label or slug for exact identity checks across providers.
+ *
+ * @param {string} value - Raw project value.
+ * @returns {string} Compact normalized value.
+ */
+function normalizeProjectIdentityValue(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
 }
 
 /**
@@ -3166,6 +3248,118 @@ function showTransientModal(titleText, bodyText) {
   modal.append(title, subtitle, actions);
   overlay.appendChild(modal);
   mountModal(overlay);
+}
+
+/**
+ * Opens the update-provider preference modal used by the bulk update toolbar button.
+ */
+function showUpdateProviderPreferenceModal(options = {}) {
+  const overlay = createModalOverlay();
+  const modal = createModalCard();
+  const title = createModalTitle("Update provider preference");
+  const subtitle = createModalSubtitle("Choose which source PackTracker should prefer first when checking for newer compatible versions.");
+  const onClose = typeof options.onClose === "function" ? options.onClose : null;
+
+  const list = document.createElement("div");
+  list.className = "version-list";
+  let selectedValue = resolveUpdateProviderPreference();
+
+  UPDATE_PROVIDER_PREFERENCES.forEach((optionData) => {
+    const row = document.createElement("label");
+    row.className = "version-item";
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "update-provider-preference";
+    radio.checked = optionData.value === selectedValue;
+    radio.addEventListener("change", () => {
+      selectedValue = optionData.value;
+    });
+
+    const text = document.createElement("div");
+    text.className = "version-item-label";
+
+    const name = document.createElement("div");
+    name.className = "version-name";
+    name.textContent = optionData.label;
+
+    const meta = document.createElement("div");
+    meta.className = "version-meta";
+    meta.textContent = optionData.value === "auto"
+      ? "Use the current item source first, then try the other provider if needed."
+      : `Try ${resolveSourceLabel(optionData.value)} first, then fall back if no compatible match exists.`;
+
+    text.append(name, meta);
+    row.append(radio, text);
+    list.appendChild(row);
+  });
+
+  const actions = createActionRow();
+  const cancelButton = createButton("Cancel");
+  const saveButton = createButton("Save preference", "btn-primary");
+  cancelButton.addEventListener("click", () => {
+    closeOverlays();
+    if (onClose) {
+      onClose();
+    }
+  });
+  saveButton.addEventListener("click", () => {
+    if (typeof updateAppSettings === "function") {
+      AppState.settings = updateAppSettings({ updateProviderPreference: selectedValue });
+    } else {
+      AppState.settings = {
+        ...(AppState.settings || {}),
+        updateProviderPreference: selectedValue,
+      };
+    }
+    if (typeof namespace.showToast === "function") {
+      namespace.showToast(`Update preference saved: ${resolveUpdatePreferenceLabel(selectedValue)}.`, "success");
+    }
+    closeOverlays();
+    if (onClose) {
+      onClose();
+    }
+  });
+  actions.append(cancelButton, saveButton);
+
+  modal.append(title, subtitle, list, actions);
+  overlay.appendChild(modal);
+  mountModal(overlay);
+}
+
+/**
+ * Returns the stored update-provider preference.
+ *
+ * @returns {"auto"|"modrinth"|"curseforge"} Normalized preference.
+ */
+function resolveUpdateProviderPreference() {
+  const raw = String(AppState.settings?.updateProviderPreference || "auto").trim().toLowerCase();
+  return UPDATE_PROVIDER_PREFERENCES.some((entry) => entry.value === raw) ? raw : "auto";
+}
+
+/**
+ * Formats one saved update-provider preference for button and subtitle labels.
+ *
+ * @param {"auto"|"modrinth"|"curseforge"} preference - Stored preference.
+ * @returns {string} User-facing label.
+ */
+function resolveUpdatePreferenceLabel(preference) {
+  if (preference === "modrinth") {
+    return "Prefer Modrinth";
+  }
+  if (preference === "curseforge") {
+    return "Prefer CurseForge";
+  }
+  return "Auto";
+}
+
+/**
+ * Builds the toolbar button label for the saved update-provider preference.
+ *
+ * @returns {string} Toolbar label.
+ */
+function resolveUpdatePreferenceButtonLabel() {
+  return `Source: ${resolveUpdatePreferenceLabel(resolveUpdateProviderPreference())}`;
 }
 
 /**
