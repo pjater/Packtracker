@@ -2026,6 +2026,8 @@
       return;
     }
 
+    let hasReloadedForServiceWorker = false;
+
     window.addEventListener("beforeinstallprompt", (event) => {
       event.preventDefault();
       deferredInstallPrompt = event;
@@ -2038,8 +2040,18 @@
       showToast("PackTracker installed as an app.", "success");
     });
 
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (hasReloadedForServiceWorker) {
+        return;
+      }
+      hasReloadedForServiceWorker = true;
+      window.location.reload();
+    });
+
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=20260423-15").catch((error) => {
+      navigator.serviceWorker.register("./sw.js?v=20260423-16").then((registration) => {
+        registration.update().catch(() => {});
+      }).catch((error) => {
         console.warn("PackTracker: service worker registration failed", error);
       });
       syncInstallButtonVisibility();
