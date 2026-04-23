@@ -32,6 +32,10 @@
   const DEFAULT_PROFILE_NAME = "New profile";
   const DEFAULT_MC_VERSION = "1.21.1";
 
+  function translate(key, fallback) {
+    return typeof namespace.t === "function" ? namespace.t(key, fallback) : fallback;
+  }
+
   /**
    * Renders the complete sidebar profile list from current state.
    */
@@ -57,7 +61,13 @@
       ? "btn btn-primary btn-small"
       : "btn btn-small";
     orderButton.type = "button";
-    orderButton.textContent = sidebarEditMode ? "\u2713 Done" : "Edit order";
+    orderButton.replaceChildren(
+      createIconLabelContent(
+        sidebarEditMode ? "\u2713" : "\u270E",
+        sidebarEditMode ? translate("done", "Done") : translate("editOrder", "Edit order"),
+        sidebarEditMode ? "btn-icon-check" : "btn-icon-pencil"
+      )
+    );
     orderButton.addEventListener("click", () => {
       sidebarEditMode = !sidebarEditMode;
       renderSidebar();
@@ -68,7 +78,7 @@
     if (profiles.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty-panel";
-      empty.textContent = "No profiles yet.";
+      empty.textContent = translate("noProfilesYetShort", "No profiles yet.");
       container.appendChild(empty);
     } else {
       profiles.forEach((profile) => {
@@ -118,7 +128,7 @@
 
     const name = document.createElement("div");
     name.className = "profile-item-name";
-    name.textContent = "\u2605 Favorites";
+    name.textContent = `\u2605 ${translate("favorites", "Favorites")}`;
 
     header.appendChild(name);
 
@@ -127,12 +137,12 @@
 
     const label = document.createElement("span");
     label.className = "badge";
-    label.textContent = "Starred items";
+    label.textContent = translate("starredItems", "Starred items");
     meta.appendChild(label);
 
     const count = document.createElement("div");
     count.className = "profile-item-count";
-    count.textContent = `${countStarredItems()} items`;
+    count.textContent = `${countStarredItems()} ${translate("items", "items")}`;
 
     item.append(header, meta, count);
     if (sidebarEditMode) {
@@ -190,7 +200,7 @@
     settingsButton.className = "icon-btn profile-settings-btn";
     settingsButton.type = "button";
     settingsButton.setAttribute("aria-label", `Settings for ${profile.name}`);
-    settingsButton.textContent = "\u2699";
+    settingsButton.appendChild(createIconOnlyContent("\u2699", "btn-icon-gear"));
     settingsButton.addEventListener("click", (event) => {
       event.stopPropagation();
       showProfileSettingsModal(profile.id);
@@ -211,7 +221,7 @@
 
     const count = document.createElement("div");
     count.className = "profile-item-count";
-    count.textContent = `${profile.mods.length} mods`;
+    count.textContent = `${profile.mods.length} ${translate("mods", "mods").toLowerCase()}`;
 
     item.append(header, meta, count);
     item.addEventListener("click", () => {
@@ -853,6 +863,44 @@
         + profile.resourcePacks.filter((item) => item.starred).length
         + profile.shaders.filter((item) => item.starred).length;
     }, 0);
+  }
+
+  /**
+   * Creates shared button content with an icon span that can be animated independently.
+   *
+   * @param {string} icon - Visible icon text.
+   * @param {string} label - Visible label text.
+   * @param {string} iconClass - Extra icon class.
+   * @returns {HTMLSpanElement} Wrapper.
+   */
+  function createIconLabelContent(icon, label, iconClass) {
+    const content = document.createElement("span");
+    content.className = "btn-content";
+
+    const iconElement = document.createElement("span");
+    iconElement.className = iconClass ? `btn-icon ${iconClass}` : "btn-icon";
+    iconElement.textContent = icon;
+
+    const labelElement = document.createElement("span");
+    labelElement.className = "btn-label";
+    labelElement.textContent = label;
+
+    content.append(iconElement, labelElement);
+    return content;
+  }
+
+  /**
+   * Creates a single animatable icon wrapper for icon-only buttons.
+   *
+   * @param {string} icon - Visible icon.
+   * @param {string} iconClass - Extra icon class.
+   * @returns {HTMLSpanElement} Icon wrapper.
+   */
+  function createIconOnlyContent(icon, iconClass) {
+    const iconElement = document.createElement("span");
+    iconElement.className = iconClass ? `btn-icon ${iconClass}` : "btn-icon";
+    iconElement.textContent = icon;
+    return iconElement;
   }
 
   Object.assign(namespace, {
