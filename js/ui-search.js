@@ -40,6 +40,10 @@ let lastExecutedSearchKey = "";
 let inflightSearchKey = "";
 let searchRequestSerial = 0;
 
+function translate(key, fallback) {
+  return typeof namespace.t === "function" ? namespace.t(key, fallback) : fallback;
+}
+
 /**
  * Forces an immediate browse search for the current filter state.
  */
@@ -87,14 +91,15 @@ function renderSearchPage() {
   const titleRow = document.createElement("div");
   titleRow.className = "search-title-row";
 
-  const backButton = createButton("← Back to profiles");
+  const backButton = createButton(`← ${translate("backToProfiles", "Back to profiles")}`);
+  backButton.replaceChildren(createIconLabelContent("←", translate("backToProfiles", "Back to profiles"), "btn-icon-arrow-left"));
   backButton.addEventListener("click", () => {
     setActiveView("home");
   });
 
   const title = document.createElement("div");
   title.className = "search-title";
-  title.textContent = `Browse ${resolveActiveSourceLabel()}`;
+  title.textContent = `${translate("browsePrefix", "Browse")} ${resolveActiveSourceLabel()}`;
 
   titleRow.append(backButton, title);
   const browseTabs = renderBrowseTabs();
@@ -107,7 +112,7 @@ function renderSearchPage() {
   searchInput.id = SEARCH_INPUT_ID;
   searchInput.className = AppState.search.loading ? "search-input loading" : "search-input";
   searchInput.type = "search";
-  searchInput.placeholder = "Search mods, resource packs, and shaders...";
+  searchInput.placeholder = translate("searchPlaceholder", "Search mods, resource packs, and shaders...");
   searchInput.value = AppState.search.query;
   searchInput.addEventListener("input", () => {
     setSearchState(
@@ -150,9 +155,9 @@ function renderSearchPage() {
   const feedback = document.createElement("div");
   feedback.className = "search-feedback";
   if (AppState.search.loading) {
-    feedback.textContent = `Searching ${resolveActiveSourceLabel()}...`;
+    feedback.textContent = `${translate("searchingPrefix", "Searching")} ${resolveActiveSourceLabel()}...`;
   } else {
-    feedback.textContent = `${AppState.search.totalHits || 0} results`;
+    feedback.textContent = `${AppState.search.totalHits || 0} ${translate("resultsSuffix", "results")}`;
   }
   page.appendChild(feedback);
 
@@ -189,7 +194,7 @@ function renderSearchPage() {
   if (!AppState.search.loading && AppState.search.results.length > 0 && AppState.search.results.length < AppState.search.totalHits) {
     const actionsRow = document.createElement("div");
     actionsRow.className = "search-actions-row";
-    const loadMoreButton = createButton("Load more");
+    const loadMoreButton = createButton(translate("loadMore", "Load more"));
     loadMoreButton.addEventListener("click", () => {
       void executeSearch(true);
     });
@@ -463,6 +468,20 @@ async function resolveAndAddMod(project, version, profileId, options = {}) {
   const source = options.source || project.source || AppState.searchSource || "modrinth";
   const shouldReturnHome = options.returnHome !== false;
   const shouldCloseOverlays = options.closeOverlays !== false;
+
+  const duplicate = !options.skipDuplicateCheck
+    ? findDuplicateTrackedItem(profile, project, projectType)
+    : null;
+  if (duplicate) {
+    showDuplicateSuspectedModal(project, profile, duplicate, () => {
+      void resolveAndAddMod(project, version, profileId, {
+        ...options,
+        skipDuplicateCheck: true,
+      });
+    });
+    return;
+  }
+
   if (projectType !== "mod") {
     const savedItem = persistNonModProject(project, version, profileId, projectType, source);
     showItemCompatibilityWarnings(savedItem, profileId);
@@ -524,6 +543,68 @@ async function resolveAndAddMod(project, version, profileId, options = {}) {
   if (shouldCloseOverlays) {
     closeSearchOverlays();
   }
+}
+
+/**
+ * Finds a likely duplicate tracked item inside the target profile.
+ *
+ * @param {object} profile - Target profile.
+ * @param {object} project - Project being added.
+ * @param {"mod"|"resourcepack"|"shader"} projectType - Project type.
+ * @returns {object|null} Existing matching item or null.
+ */
+function findDuplicateTrackedItem(profile, project, projectType) {
+  const collection = projectType === "resourcepack"
+    ? profile.resourcePacks
+    : projectType === "shader"
+      ? profile.shaders
+      : profile.mods;
+  const safeCollection = Array.isArray(collection) ? collection : [];
+  const projectId = String(project.project_id || project.id || "").trim().toLowerCase();
+  const slug = String(project.slug || "").trim().toLowerCase();
+  const name = String(project.title || project.name || "").trim().toLowerCase();
+
+  return safeCollection.find((entry) => {
+    const entryId = String(entry.projectId || entry.id || "").trim().toLowerCase();
+    const entrySlug = String(entry.slug || "").trim().toLowerCase();
+    const entryName = String(entry.name || "").trim().toLowerCase();
+    return (projectId && entryId === projectId)
+      || (slug && entrySlug === slug)
+      || (name && entryName === name);
+  }) || null;
+}
+
+/**
+ * Warns before adding something that already seems to be tracked in the target profile.
+ *
+ * @param {object} project - Project being added.
+ * @param {object} profile - Target profile.
+ * @param {object} existingItem - Existing matching item.
+ * @param {() => void} onConfirm - Callback fired when the user chooses to continue.
+ */
+function showDuplicateSuspectedModal(project, profile, existingItem, onConfirm) {
+  const overlay = createModalOverlay();
+  const modal = createModalCard();
+  const projectName = project.title || project.name || "this item";
+  const title = createModalTitle("Possible duplicate");
+  const subtitle = createModalSubtitle(
+    `PackTracker suspects you already have ${projectName} in ${profile.name}.`
+  );
+  const details = document.createElement("div");
+  details.className = "settings-field-help";
+  details.textContent = `Tracked as ${existingItem.name || projectName} via ${existingItem.source || "the current provider"}.`;
+  const actions = createActionRow();
+  const cancelButton = createButton("Keep existing");
+  const continueButton = createButton("Add anyway", "btn-primary");
+  cancelButton.addEventListener("click", closeSearchOverlays);
+  continueButton.addEventListener("click", () => {
+    closeSearchOverlays();
+    onConfirm();
+  });
+  actions.append(cancelButton, continueButton);
+  modal.append(title, subtitle, details, actions);
+  overlay.appendChild(modal);
+  mountModal(overlay);
 }
 
 /**
@@ -759,7 +840,7 @@ function renderBrowseTabs() {
     const button = document.createElement("button");
     button.className = AppState.browseContext?.defaultTab === tab.key ? "tab active" : "tab";
     button.type = "button";
-    button.textContent = tab.label;
+    button.appendChild(createTabLabel(resolveBrowseTabLabel(tab.key)));
     button.addEventListener("click", () => {
       setBrowseContext(tab.key);
       setSearchState(
@@ -1027,10 +1108,15 @@ function createEmptySearchState() {
   empty.className = "empty-state";
   const icon = document.createElement("div");
   icon.className = "empty-state-icon";
-  icon.textContent = "⌕";
+  const image = document.createElement("img");
+  image.className = "state-logo";
+  image.src = "./assets/logo.png?v=20260420-1";
+  image.alt = "";
+  image.draggable = false;
+  icon.appendChild(image);
   const text = document.createElement("div");
   text.className = "empty-state-text";
-  text.textContent = "No results yet. Try another search or browse the most popular projects.";
+  text.textContent = translate("noResultsYet", "No results yet. Try another search or browse the most popular projects.");
   empty.append(icon, text);
   return empty;
 }
@@ -1105,7 +1191,7 @@ function createFilterSelect(labelText, id, options, value, onChange) {
       window.setTimeout(() => {
         select.classList.remove("is-closing");
         menu.classList.remove("closing");
-      }, 100);
+      }, 140);
     }
 
   /**
@@ -1173,12 +1259,74 @@ function createViewToggle(scope) {
     button.textContent = mode === "list" ? "☰" : "⊞";
     button.setAttribute("aria-label", mode === "list" ? "List view" : "Grid view");
     button.addEventListener("click", () => {
-      setViewMode(scope, mode);
+      if (getViewMode(scope) !== mode) {
+        animateViewToggleChange(group, button, scope, mode);
+      }
     });
     group.appendChild(button);
   });
 
+  queueViewToggleIndicatorUpdate(group);
   return group;
+}
+
+/**
+ * Animates the browse layout switch before committing the next view mode.
+ *
+ * @param {HTMLDivElement} toggle - View-toggle wrapper.
+ * @param {HTMLButtonElement} nextButton - Newly selected toggle button.
+ * @param {"browse"} scope - View-mode scope.
+ * @param {"list"|"grid"} nextMode - Next layout mode.
+ */
+function animateViewToggleChange(toggle, nextButton, scope, nextMode) {
+  if (!(toggle instanceof HTMLElement) || !(nextButton instanceof HTMLElement)) {
+    return;
+  }
+
+  if (toggle.dataset.switching === "true") {
+    return;
+  }
+
+  toggle.dataset.switching = "true";
+  toggle.classList.add("is-switching");
+  toggle.querySelectorAll(".view-toggle-btn").forEach((button) => {
+    button.classList.toggle("active", button === nextButton);
+  });
+  updateViewToggleIndicator(toggle);
+
+  window.setTimeout(() => {
+    setViewMode(scope, nextMode);
+  }, 140);
+}
+
+/**
+ * Schedules alignment of the active view-toggle pill after layout.
+ *
+ * @param {HTMLDivElement} toggle - View-toggle wrapper.
+ */
+function queueViewToggleIndicatorUpdate(toggle) {
+  window.requestAnimationFrame(() => {
+    updateViewToggleIndicator(toggle);
+  });
+}
+
+/**
+ * Aligns the animated view-toggle pill with the active layout button.
+ *
+ * @param {HTMLDivElement} toggle - View-toggle wrapper.
+ */
+function updateViewToggleIndicator(toggle) {
+  if (!(toggle instanceof HTMLElement)) {
+    return;
+  }
+
+  const activeButton = toggle.querySelector(".view-toggle-btn.active");
+  if (!(activeButton instanceof HTMLElement)) {
+    return;
+  }
+
+  toggle.style.setProperty("--view-toggle-left", `${activeButton.offsetLeft}px`);
+  toggle.style.setProperty("--view-toggle-width", `${activeButton.offsetWidth}px`);
 }
 
 /**
@@ -1533,6 +1681,59 @@ function mapBrowseTabToProjectType(tab) {
     return "shader";
   }
   return "mod";
+}
+
+/**
+ * Resolves one localized browse-tab label.
+ *
+ * @param {"mods"|"resourcepacks"|"shaders"} tabKey - Browse tab id.
+ * @returns {string} User-facing label.
+ */
+function resolveBrowseTabLabel(tabKey) {
+  if (tabKey === "resourcepacks") {
+    return translate("resourcePacks", "Resource Packs");
+  }
+  if (tabKey === "shaders") {
+    return translate("shaders", "Shaders");
+  }
+  return translate("mods", "Mods");
+}
+
+/**
+ * Creates one tab label span for shared hover animation styling.
+ *
+ * @param {string} text - Visible tab text.
+ * @returns {HTMLSpanElement} Label span.
+ */
+function createTabLabel(text) {
+  const label = document.createElement("span");
+  label.className = "tab-label";
+  label.textContent = text;
+  return label;
+}
+
+/**
+ * Creates shared button content with a separately animatable icon span.
+ *
+ * @param {string} icon - Visible icon.
+ * @param {string} label - Visible label.
+ * @param {string} iconClass - Extra icon class.
+ * @returns {HTMLSpanElement} Wrapper.
+ */
+function createIconLabelContent(icon, label, iconClass) {
+  const content = document.createElement("span");
+  content.className = "btn-content";
+
+  const iconElement = document.createElement("span");
+  iconElement.className = iconClass ? `btn-icon ${iconClass}` : "btn-icon";
+  iconElement.textContent = icon;
+
+  const labelElement = document.createElement("span");
+  labelElement.className = "btn-label";
+  labelElement.textContent = label;
+
+  content.append(iconElement, labelElement);
+  return content;
 }
 
 /**
