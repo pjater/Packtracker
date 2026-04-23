@@ -1,21 +1,22 @@
-const CACHE_NAME = "packtracker-shell-v20260422-1";
+const CACHE_NAME = "packtracker-shell-v20260423-13";
 const APP_SHELL_FILES = [
   "./",
   "./index.html",
-  "./css/style.css?v=20260420-1",
+  "./css/style.css?v=20260423-13",
   "./js/drag-order.js?v=20260420-1",
-  "./js/platform.js?v=20260420-1",
-  "./js/state.js?v=20260420-1",
-  "./js/storage.js?v=20260420-1",
+  "./js/platform.js?v=20260422-5",
+  "./js/state.js?v=20260422-2",
+  "./js/storage.js?v=20260423-10",
   "./js/modrinth.js?v=20260420-1",
   "./js/curseforge.js?v=20260420-1",
   "./js/download-cache.js?v=20260420-1",
   "./js/scanner.js?v=20260420-1",
-  "./js/ui-sidebar.js?v=20260420-1",
-  "./js/ui-modlist.js?v=20260420-1",
-  "./js/ui-share.js?v=20260420-1",
-  "./js/ui-search.js?v=20260420-1",
-  "./js/main.js?v=20260420-1",
+  "./js/ui-sidebar.js?v=20260423-4",
+  "./js/ui-modlist.js?v=20260423-10",
+  "./js/ui-share.js?v=20260422-5",
+  "./js/ui-search.js?v=20260423-13",
+  "./js/scanner.js?v=20260423-2",
+  "./js/main.js?v=20260423-13",
   "./assets/logo.png?v=20260420-1",
   "./manifest.webmanifest?v=20260422-1"
 ];
