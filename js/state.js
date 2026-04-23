@@ -59,6 +59,7 @@
       defaultTab: "mods",
     },
     data: null,
+    settings: null,
     dirty: false,
     viewModes: loadViewModes(),
   };
@@ -370,27 +371,6 @@
     setActiveTab,
     setActiveView,
     setSearchSource,
-    setSearchState,
-    setSearchResults,
-    setBrowseContext,
-    setDirtyState,
-    setViewMode,
-    getViewMode,
-    getActiveProfile,
-    isFavoritesProfileId,
-    getFavoritesProfile,
-  });
-})();
-
-  Object.assign(namespace, {
-    AppState,
-    FAVORITES_PROFILE_ID,
-    subscribe,
-    notifyStateChanged,
-    setData,
-    setActiveProfile,
-    setActiveTab,
-    setActiveView,
     setSearchState,
     setSearchResults,
     setBrowseContext,
