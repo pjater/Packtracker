@@ -175,7 +175,12 @@ function renderScanResultsModal() {
 
   const betaNote = document.createElement("div");
   betaNote.className = "scan-beta-note";
-  betaNote.textContent = "Beta feature: scan results may be incomplete or inaccurate. It is safer to add items manually or double-check everything before adding it to your profile.";
+  const betaTag = document.createElement("span");
+  betaTag.className = "experimental-tag";
+  betaTag.textContent = "Experimental";
+  const betaText = document.createElement("span");
+  betaText.textContent = "Scan results may be incomplete or inaccurate. It is safer to add items manually or double-check everything before adding it to your profile.";
+  betaNote.append(betaTag, betaText);
 
   const list = document.createElement("div");
   list.className = "scan-list";
