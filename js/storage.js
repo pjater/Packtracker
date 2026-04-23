@@ -11,6 +11,7 @@
   const SUPPORTED_THEMES = ["dark", "light", "system"];
   const SUPPORTED_DOWNLOAD_BEHAVIORS = ["ask", "default"];
   const SUPPORTED_FONT_STYLES = ["default", "manrope", "poppins", "serif", "monospace"];
+  const SUPPORTED_UPDATE_PROVIDER_PREFERENCES = ["auto", "modrinth", "curseforge"];
 
   /**
    * Loads persisted PackTracker data and normalizes the result.
@@ -498,6 +499,8 @@
       fontStyle: "default",
       highContrast: false,
       roundedCorners: 12,
+      updateProviderPreference: "auto",
+      showBootScreen: true,
       defaultDownloadDirectoryName: "",
       downloadBehavior: "ask",
       seenReleaseNotesVersion: "",
@@ -525,6 +528,8 @@
       fontStyle: normalizeFontStyle(value.fontStyle),
       highContrast: Boolean(value.highContrast),
       roundedCorners: normalizeRoundedCorners(value.roundedCorners),
+      updateProviderPreference: normalizeUpdateProviderPreference(value.updateProviderPreference),
+      showBootScreen: value.showBootScreen !== false,
       defaultDownloadDirectoryName: String(value.defaultDownloadDirectoryName || "").trim(),
       downloadBehavior: normalizeDownloadBehavior(value.downloadBehavior),
       seenReleaseNotesVersion: String(value.seenReleaseNotesVersion || "").trim(),
@@ -617,6 +622,17 @@
   function normalizeFontStyle(fontStyle) {
     const value = String(fontStyle || "default").trim().toLowerCase();
     return SUPPORTED_FONT_STYLES.includes(value) ? value : "default";
+  }
+
+  /**
+   * Normalizes the stored update-provider preference.
+   *
+   * @param {unknown} preference - Raw preference value.
+   * @returns {"auto"|"modrinth"|"curseforge"} Normalized preference.
+   */
+  function normalizeUpdateProviderPreference(preference) {
+    const value = String(preference || "auto").trim().toLowerCase();
+    return SUPPORTED_UPDATE_PROVIDER_PREFERENCES.includes(value) ? value : "auto";
   }
 
   /**
