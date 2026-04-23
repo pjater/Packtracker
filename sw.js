@@ -1,21 +1,21 @@
-const CACHE_NAME = "packtracker-shell-v20260423-15";
+const CACHE_NAME = "packtracker-shell-v20260423-16";
 const APP_SHELL_FILES = [
   "./",
   "./index.html",
-  "./css/style.css?v=20260423-15",
-  "./js/drag-order.js?v=20260420-1",
-  "./js/platform.js?v=20260422-5",
-  "./js/state.js?v=20260422-2",
-  "./js/storage.js?v=20260423-15",
-  "./js/modrinth.js?v=20260420-1",
-  "./js/curseforge.js?v=20260420-1",
-  "./js/download-cache.js?v=20260420-1",
-  "./js/scanner.js?v=20260423-15",
-  "./js/ui-sidebar.js?v=20260423-15",
-  "./js/ui-modlist.js?v=20260423-15",
-  "./js/ui-share.js?v=20260423-15",
-  "./js/ui-search.js?v=20260423-15",
-  "./js/main.js?v=20260423-15",
+  "./css/style.css?v=20260423-16",
+  "./js/drag-order.js?v=20260423-16",
+  "./js/platform.js?v=20260423-16",
+  "./js/state.js?v=20260423-16",
+  "./js/storage.js?v=20260423-16",
+  "./js/modrinth.js?v=20260423-16",
+  "./js/curseforge.js?v=20260423-16",
+  "./js/download-cache.js?v=20260423-16",
+  "./js/scanner.js?v=20260423-16",
+  "./js/ui-sidebar.js?v=20260423-16",
+  "./js/ui-modlist.js?v=20260423-16",
+  "./js/ui-share.js?v=20260423-16",
+  "./js/ui-search.js?v=20260423-16",
+  "./js/main.js?v=20260423-16",
   "./assets/logo.png?v=20260420-1",
   "./manifest.webmanifest?v=20260422-1"
 ];
@@ -48,27 +48,26 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (event.request.mode === "navigate" || requestUrl.pathname.endsWith("/index.html")) {
-    event.respondWith(
-      fetch(event.request).then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200) {
-          const responseClone = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put("./index.html", responseClone);
-          });
-        }
-        return networkResponse;
-      }).catch(async () => {
-        return caches.match("./index.html");
-      })
-    );
-    return;
-  }
-
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
+    fetch(event.request).then((networkResponse) => {
+      if (networkResponse && networkResponse.status === 200) {
+        const responseClone = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, responseClone);
+          if (event.request.mode === "navigate" || requestUrl.pathname.endsWith("/index.html")) {
+            cache.put("./index.html", networkResponse.clone());
+          }
+        });
+      }
+      return networkResponse;
+    }).catch(async () => {
+      const cachedResponse = await caches.match(event.request);
       if (cachedResponse) {
         return cachedResponse;
+      }
+
+      if (event.request.mode === "navigate") {
+        return caches.match("./index.html");
       }
 
       return fetch(event.request).then((networkResponse) => {
@@ -81,11 +80,7 @@ self.addEventListener("fetch", (event) => {
           cache.put(event.request, responseClone);
         });
         return networkResponse;
-      }).catch(async () => {
-        if (event.request.mode === "navigate") {
-          return caches.match("./index.html");
-        }
-
+        }).catch(async () => {
         throw new Error("Network request failed");
       });
     })
