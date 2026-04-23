@@ -535,3 +535,176 @@
         if (result?.importedProfile?.id) {
           setActiveProfile(result.importedProfile.id);
           setActiveView("home");
+        }
+        importInput.value = "";
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : "Import failed", "danger");
+        importInput.value = "";
+      }
+    });
+  }
+
+  /**
+   * Shows a toast notification (placeholder until implementation).
+   * 
+   * @param {string} message - Toast message
+   * @param {string} type - Toast type (success, danger, warning, etc.)
+   */
+  function showToast(message, type = "info") {
+    const root = document.getElementById(TOAST_ROOT_ID);
+    if (!root) return;
+
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    root.appendChild(toast);
+
+    window.setTimeout(() => {
+      toast.classList.add("toast-exit");
+      window.setTimeout(() => toast.remove(), 150);
+    }, 3000);
+  }
+
+  /**
+   * Shows the app settings modal.
+   * 
+   * @param {string} tab - Settings tab (general, visual, updates, about)
+   */
+  function showSettingsModal(tab = "general") {
+    const root = document.getElementById(MODAL_ROOT_ID);
+    if (!root) return;
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay closing";
+    
+    const modal = document.createElement("div");
+    modal.className = "modal modal-wide closing";
+    
+    const body = document.createElement("div");
+    body.className = "modal-body";
+    
+    const title = document.createElement("h2");
+    title.className = "modal-title";
+    title.textContent = "Settings";
+    
+    const subtitle = document.createElement("p");
+    subtitle.className = "modal-subtitle";
+    subtitle.textContent = "Customize PackTracker to your preferences.";
+    
+    const content = document.createElement("div");
+    content.className = "settings-content";
+    content.innerHTML = "<p>Settings panel - coming soon</p>";
+    
+    const actions = document.createElement("div");
+    actions.className = "action-row";
+    
+    const closeButton = document.createElement("button");
+    closeButton.className = "btn btn-primary";
+    closeButton.textContent = "Close";
+    closeButton.addEventListener("click", () => {
+      overlay.classList.remove("closing");
+      modal.classList.remove("closing");
+      window.setTimeout(() => overlay.remove(), 150);
+    });
+    
+    actions.appendChild(closeButton);
+    body.append(title, subtitle, content, actions);
+    modal.appendChild(body);
+    overlay.appendChild(modal);
+    root.appendChild(overlay);
+    
+    // Trigger animation
+    window.requestAnimationFrame(() => {
+      overlay.classList.remove("closing");
+      modal.classList.remove("closing");
+    });
+  }
+
+  /**
+   * Dismisses root overlay children with fade animation.
+   * 
+   * @param {HTMLElement} root - Root container
+   */
+  function dismissRootChildren(root) {
+    const overlays = Array.from(root.children);
+    if (overlays.length === 0) {
+      return;
+    }
+
+    overlays.forEach((overlay) => {
+      overlay.classList.add("closing");
+      const modal = overlay.querySelector(".modal");
+      if (modal) {
+        modal.classList.add("closing");
+      }
+    });
+
+    window.setTimeout(() => {
+      overlays.forEach((overlay) => {
+        if (overlay.parentElement === root) {
+          overlay.remove();
+        }
+      });
+    }, 150);
+  }
+
+  /**
+   * Parses and opens an incoming `?share=` URL payload once on app startup.
+   */
+  function handleIncomingShareLink() {
+    if (typeof parseShareLink !== "function" || typeof showShareImportModal !== "function") {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("share")) {
+      return;
+    }
+
+    try {
+      const sharedProfile = parseShareLink(url.toString());
+      url.searchParams.delete("share");
+      const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+      window.history.replaceState({}, "", nextUrl);
+      showShareImportModal(sharedProfile);
+    } catch (error) {
+      url.searchParams.delete("share");
+      const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+      window.history.replaceState({}, "", nextUrl);
+      showToast(error instanceof Error ? error.message : "Invalid share link", "danger");
+    }
+  }
+
+  // Initialize app on DOMContentLoaded
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", async () => {
+      AppState.settings = typeof loadAppSettings === "function" ? loadAppSettings() : null;
+      AppState.data = typeof loadData === "function" ? await loadData() : null;
+      if (typeof recordAppVisit === "function") {
+        recordAppVisit();
+      }
+      renderSidebar();
+      renderProfileView();
+      bindTopLevelEvents();
+      handleIncomingShareLink();
+    });
+  } else {
+    AppState.settings = typeof loadAppSettings === "function" ? loadAppSettings() : null;
+    (async () => {
+      AppState.data = typeof loadData === "function" ? await loadData() : null;
+      if (typeof recordAppVisit === "function") {
+        recordAppVisit();
+      }
+      renderSidebar();
+      renderProfileView();
+      bindTopLevelEvents();
+      handleIncomingShareLink();
+    })();
+  }
+
+  Object.assign(window.PackTracker, {
+    dismissRootChildren,
+    showToast,
+    showSettingsModal,
+  });
+})();
