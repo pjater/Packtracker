@@ -3,6 +3,8 @@
   const {
     AppState,
     downloadFile,
+    downloadWithPreferences,
+    prepareDownloadWithPreferences,
     downloadCategoryAsZip,
     importSharedProfile,
     setActiveProfile,
@@ -264,7 +266,33 @@
       downloadButton.textContent = "No link";
     } else {
       downloadButton.addEventListener("click", () => {
-        void downloadFile(fileUrl, item.fileName || "");
+        void (async () => {
+          try {
+            const suggestedName = String(item.fileName || "").trim()
+              || `${sanitizeFileName(item.name || item.slug || "download")}.jar`;
+            const preparedDownload = typeof prepareDownloadWithPreferences === "function"
+              ? await prepareDownloadWithPreferences(suggestedName)
+              : null;
+            if (preparedDownload?.mode === "cancelled") {
+              return;
+            }
+
+            if (typeof downloadWithPreferences === "function") {
+              await downloadWithPreferences(
+                fileUrl,
+                item.fileName || "",
+                preparedDownload?.saveHandle ? { saveHandle: preparedDownload.saveHandle } : undefined
+              );
+              return;
+            }
+
+            await downloadFile(fileUrl, item.fileName || "");
+          } catch (error) {
+            if (typeof namespace.showToast === "function") {
+              namespace.showToast(error instanceof Error ? error.message : "Download failed", "danger");
+            }
+          }
+        })();
       });
     }
 
@@ -312,6 +340,22 @@
 
     row.append(key, text);
     return row;
+  }
+
+  /**
+   * Sanitizes one filename fragment for browser download suggestions.
+   *
+   * @param {string} value - Raw file label.
+   * @returns {string} Safe filename fragment.
+   */
+  function sanitizeFileName(value) {
+    return String(value || "download")
+      .trim()
+      .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      || "download";
   }
 
   /**
