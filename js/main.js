@@ -2039,7 +2039,7 @@
     });
 
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=20260423-14").catch((error) => {
+      navigator.serviceWorker.register("./sw.js?v=20260423-15").catch((error) => {
         console.warn("PackTracker: service worker registration failed", error);
       });
       syncInstallButtonVisibility();
