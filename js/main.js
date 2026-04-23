@@ -88,6 +88,7 @@
       fatalTitle: "PackTracker could not load",
       general: "General",
       visual: "Visual",
+      advanced: "Advanced",
       updates: "Updates",
       about: "About",
       onboarding: "Welcome to PackTracker",
@@ -133,8 +134,9 @@
       addShader: "+ Add shader",
       downloadAsZip: "⬇ Download as ZIP",
       settingsIntro: "Choose how PackTracker looks, where downloads go, and how the app behaves on startup.",
-      generalSettingsIntro: "Choose language, download preferences, and other app-wide behavior settings.",
+      generalSettingsIntro: "Choose language and other app-wide behavior settings.",
       visualSettingsIntro: "Adjust theme, accent color, motion, blur, and other appearance settings for PackTracker.",
+      advancedSettingsIntro: "Control startup and download behavior for more advanced PackTracker usage.",
       defaultDownloadFolder: "Default download folder",
       downloadsFolderHintEmpty: "No default folder selected yet. Pick a normal folder or subfolder, not the Windows Downloads root.",
       currentFolderPrefix: "Current folder:",
@@ -150,6 +152,9 @@
       resetSettingsHelp: "This resets language, theme, update prompts, onboarding state, and download preferences.",
       resetSettingsConfirmTitle: "Reset all settings?",
       resetSettingsConfirmBody: "This will reset language, theme, onboarding, update prompts, and default download behavior.",
+      startupBootScreen: "Startup boot screen",
+      startupBootScreenHelp: "Shows a short PackTracker splash screen when the app opens.",
+      enabled: "Enabled",
       cancel: "Cancel",
       saveVisualSettings: "Save visual settings",
       visualSettingsSaved: "Visual settings saved.",
@@ -389,8 +394,12 @@
   let lastVisibleViewId = null;
   let hasHandledFirstRunPrompts = false;
   let visualSettingsDraft = null;
+  let bootScreenStartedAt = 0;
+  let bootScreenDismissed = false;
+  const BOOT_SCREEN_MIN_MS = 1000;
 
   document.addEventListener("DOMContentLoaded", () => {
+    bootScreenStartedAt = performance.now();
     registerStandaloneAppSupport();
     void initializeApp();
   });
@@ -411,6 +420,7 @@
           fontStyle: "default",
           highContrast: false,
           roundedCorners: 12,
+          showBootScreen: true,
           defaultDownloadDirectoryName: "",
           downloadBehavior: "ask",
           seenReleaseNotesVersion: "",
@@ -454,6 +464,8 @@
     } catch (error) {
       console.error("PackTracker failed to initialize", error);
       renderFatalState(error);
+    } finally {
+      void dismissBootScreen();
     }
   }
 
@@ -693,6 +705,9 @@
     root.style.setProperty("--color-accent", accentColor);
     root.style.setProperty("--color-accent-dim", withAlpha(accentColor, 0.16));
     root.style.setProperty("--color-accent-rgb", toRgbTriplet(accentColor));
+    root.style.setProperty("--brand-logo-hue", `${getLogoHueRotation(accentColor)}deg`);
+    root.style.setProperty("--brand-logo-saturation", "1.15");
+    root.style.setProperty("--brand-logo-brightness", "1.02");
     root.style.setProperty("--visual-blur", `${Math.max(0, Number(settings.blurStrength || 0))}px`);
     root.style.setProperty("--font-body", settings.fontStyle === "monospace"
       ? "\"IBM Plex Mono\", \"Cascadia Mono\", \"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace"
@@ -984,7 +999,7 @@
   /**
    * Opens the full-screen app settings modal.
    *
-   * @param {"general"|"visual"|"updates"|"about"} initialTab - First visible settings tab.
+   * @param {"general"|"visual"|"advanced"|"updates"|"about"} initialTab - First visible settings tab.
    */
   function showSettingsModal(initialTab = "general") {
     const modalRoot = document.getElementById(MODAL_ROOT_ID);
@@ -992,7 +1007,7 @@
       return;
     }
 
-    const activeTab = ["general", "visual", "updates", "about"].includes(initialTab) ? initialTab : "general";
+    const activeTab = ["general", "visual", "advanced", "updates", "about"].includes(initialTab) ? initialTab : "general";
     const settings = AppState.settings || {};
     if (!visualSettingsDraft) {
       visualSettingsDraft = createVisualSettingsDraft(settings);
@@ -1073,6 +1088,7 @@
     [
       { key: "general", label: t("general", "General") },
       { key: "visual", label: t("visual", "Visual") },
+      { key: "advanced", label: t("advanced", "Advanced") },
       { key: "updates", label: t("updates", "Updates") },
       { key: "about", label: t("about", "About") },
     ].forEach((entry) => {
@@ -1091,6 +1107,8 @@
         ? renderGeneralSettingsPanel(settings)
         : activeTab === "visual"
           ? renderVisualSettingsPanel(visualSettingsDraft)
+          : activeTab === "advanced"
+            ? renderAdvancedSettingsPanel(settings)
           : activeTab === "updates"
             ? renderUpdatesSettingsPanel()
             : renderAboutSettingsPanel()
@@ -1102,7 +1120,7 @@
   }
 
   /**
-   * Renders the general settings panel with language and download preferences.
+   * Renders the general settings panel with language and essential behavior settings.
    *
    * @param {object} settings - Current settings snapshot.
    * @returns {HTMLDivElement} Settings panel element.
@@ -1113,7 +1131,7 @@
 
     const intro = document.createElement("div");
     intro.className = "settings-panel-copy";
-    intro.textContent = t("generalSettingsIntro", "Choose language, download preferences, and other app-wide behavior settings.");
+    intro.textContent = t("generalSettingsIntro", "Choose language and other app-wide behavior settings.");
     panel.appendChild(intro);
 
     const languageGroup = createSettingsField(t("languageExperimental", "Language"), { experimental: true });
@@ -1127,6 +1145,35 @@
       showSettingsModal("general");
     });
     languageGroup.appendChild(languageSelect);
+
+    const resetGroup = createSettingsField(t("resetAllSettings", "Reset all settings"));
+    const resetHelp = document.createElement("div");
+    resetHelp.className = "settings-field-help";
+    resetHelp.textContent = t("resetSettingsHelp", "This resets language, theme, update prompts, onboarding state, and download preferences.");
+    const resetButton = createSettingsActionButton(t("resetAllSettings", "Reset all settings"), "btn-danger");
+    resetButton.addEventListener("click", () => {
+      showResetSettingsConfirmModal();
+    });
+    resetGroup.append(resetHelp, resetButton);
+
+    panel.append(languageGroup, resetGroup);
+    return panel;
+  }
+
+  /**
+   * Renders advanced settings such as startup and download behavior.
+   *
+   * @param {object} settings - Current settings snapshot.
+   * @returns {HTMLDivElement} Settings panel element.
+   */
+  function renderAdvancedSettingsPanel(settings) {
+    const panel = document.createElement("div");
+    panel.className = "settings-panel";
+
+    const intro = document.createElement("div");
+    intro.className = "settings-panel-copy";
+    intro.textContent = t("advancedSettingsIntro", "Control startup and download behavior for more advanced PackTracker usage.");
+    panel.appendChild(intro);
 
     const downloadsGroup = createSettingsField(t("defaultDownloadFolder", "Default download folder"));
     const downloadsHint = document.createElement("div");
@@ -1147,7 +1194,7 @@
           ? updateAppSettings({ defaultDownloadDirectoryName: result.name || "Selected folder" })
           : AppState.settings;
         showToast(`Default download folder set to ${result.name}.`, "success");
-        showSettingsModal("general");
+        showSettingsModal("advanced");
       } catch (error) {
         showToast(error instanceof Error ? error.message : "Could not choose a default folder.", "danger");
       }
@@ -1159,7 +1206,7 @@
         AppState.settings = typeof updateAppSettings === "function"
           ? updateAppSettings({ defaultDownloadDirectoryName: "", downloadBehavior: "ask" })
           : AppState.settings;
-        showSettingsModal("general");
+        showSettingsModal("advanced");
       } catch (error) {
         showToast(error instanceof Error ? error.message : "Could not clear the default folder.", "danger");
       }
@@ -1172,7 +1219,7 @@
       AppState.settings = typeof updateAppSettings === "function"
         ? updateAppSettings({ downloadBehavior: value })
         : AppState.settings;
-      showSettingsModal("general");
+      showSettingsModal("advanced");
     });
     const behaviorHelp = document.createElement("div");
     behaviorHelp.className = "settings-field-help";
@@ -1181,17 +1228,7 @@
       : t("downloadBehaviorAskHelp", "PackTracker will ask where to save direct downloads when the browser allows it. Bulk downloads may still use the browser's standard flow.");
     behaviorGroup.append(behaviorSelect, behaviorHelp);
 
-    const resetGroup = createSettingsField(t("resetAllSettings", "Reset all settings"));
-    const resetHelp = document.createElement("div");
-    resetHelp.className = "settings-field-help";
-    resetHelp.textContent = t("resetSettingsHelp", "This resets language, theme, update prompts, onboarding state, and download preferences.");
-    const resetButton = createSettingsActionButton(t("resetAllSettings", "Reset all settings"), "btn-danger");
-    resetButton.addEventListener("click", () => {
-      showResetSettingsConfirmModal();
-    });
-    resetGroup.append(resetHelp, resetButton);
-
-    panel.append(languageGroup, downloadsGroup, behaviorGroup, resetGroup);
+    panel.append(downloadsGroup, behaviorGroup);
     return panel;
   }
 
@@ -1269,6 +1306,21 @@
       },
     }));
 
+    const bootGroup = createSettingsField(t("startupBootScreen", "Startup boot screen"));
+    bootGroup.appendChild(createSettingsToggleControl({
+      checked: settings.showBootScreen !== false,
+      label: t("startupBootScreenHelp", "Shows a short PackTracker splash screen when the app opens."),
+      toggleLabel: t("enabled", "Enabled"),
+      onChange(value) {
+        AppState.settings = typeof updateAppSettings === "function"
+          ? updateAppSettings({ showBootScreen: value })
+          : {
+              ...(AppState.settings || {}),
+              showBootScreen: value,
+            };
+      },
+    }));
+
     const fontGroup = createSettingsField(t("fontStyle", "Font style"));
     const fontSelect = createSettingsDropdown(FONT_STYLES, settings.fontStyle || "default", (value) => {
       updateVisualSettingsDraft({ fontStyle: value });
@@ -1317,7 +1369,7 @@
     });
     saveRow.append(resetButton, saveButton);
 
-    panel.append(themeGroup, accentGroup, blurGroup, motionGroup, fontGroup, contrastGroup, cornersGroup, saveRow);
+    panel.append(themeGroup, accentGroup, blurGroup, motionGroup, bootGroup, fontGroup, contrastGroup, cornersGroup, saveRow);
     return panel;
   }
 
@@ -1366,6 +1418,52 @@
       ...(visualSettingsDraft || createVisualSettingsDraft(AppState.settings || {})),
       ...patch,
     };
+  }
+
+  /**
+   * Hides the startup boot screen after the first render is ready.
+   *
+   * @returns {Promise<void>} Resolves after the overlay is removed.
+   */
+  async function dismissBootScreen() {
+    if (bootScreenDismissed) {
+      return;
+    }
+
+    const bootScreen = document.getElementById("boot-screen");
+    if (!bootScreen) {
+      bootScreenDismissed = true;
+      return;
+    }
+
+    if (document.documentElement.dataset.bootScreen === "off" || AppState.settings?.showBootScreen === false) {
+      bootScreen.remove();
+      bootScreenDismissed = true;
+      return;
+    }
+
+    const elapsed = Math.max(0, performance.now() - bootScreenStartedAt);
+    const remaining = Math.max(0, BOOT_SCREEN_MIN_MS - elapsed);
+    if (remaining > 0) {
+      await waitForUiDelay(remaining);
+    }
+
+    bootScreen.classList.add("leaving");
+    await waitForUiDelay(220);
+    bootScreen.remove();
+    bootScreenDismissed = true;
+  }
+
+  /**
+   * Waits for a small UI delay.
+   *
+   * @param {number} ms - Delay duration in milliseconds.
+   * @returns {Promise<void>} Resolves after the timeout.
+   */
+  function waitForUiDelay(ms) {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+    });
   }
 
   /**
@@ -1495,6 +1593,62 @@
     const range = Math.max(1, Number(max) - Number(min));
     const progress = ((Number(value) - Number(min)) / range) * 100;
     return `${Math.min(100, Math.max(0, progress))}%`;
+  }
+
+  /**
+   * Computes an approximate hue-rotation that pushes the default green logo toward the chosen accent.
+   *
+   * @param {string} color - Accent hex color.
+   * @returns {number} Hue rotation in degrees.
+   */
+  function getLogoHueRotation(color) {
+    const hue = getHueFromHex(color);
+    if (hue === null) {
+      return 0;
+    }
+    const baseHue = 142;
+    let rotation = hue - baseHue;
+    if (rotation > 180) {
+      rotation -= 360;
+    } else if (rotation < -180) {
+      rotation += 360;
+    }
+    return rotation;
+  }
+
+  /**
+   * Extracts the hue channel from a 6-digit hex color.
+   *
+   * @param {string} color - Hex color like #1ad969.
+   * @returns {number|null} Hue in degrees or null when invalid.
+   */
+  function getHueFromHex(color) {
+    const safe = String(color || "").replace("#", "");
+    if (!/^[0-9a-fA-F]{6}$/.test(safe)) {
+      return null;
+    }
+
+    const red = parseInt(safe.slice(0, 2), 16) / 255;
+    const green = parseInt(safe.slice(2, 4), 16) / 255;
+    const blue = parseInt(safe.slice(4, 6), 16) / 255;
+    const max = Math.max(red, green, blue);
+    const min = Math.min(red, green, blue);
+    const delta = max - min;
+
+    if (delta === 0) {
+      return 0;
+    }
+
+    let hue;
+    if (max === red) {
+      hue = ((green - blue) / delta) % 6;
+    } else if (max === green) {
+      hue = (blue - red) / delta + 2;
+    } else {
+      hue = (red - green) / delta + 4;
+    }
+
+    return Math.round(hue * 60 < 0 ? hue * 60 + 360 : hue * 60);
   }
 
   /**
@@ -2049,7 +2203,7 @@
     });
 
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=20260423-16").then((registration) => {
+      navigator.serviceWorker.register("./sw.js?v=20260423-26").then((registration) => {
         registration.update().catch(() => {});
       }).catch((error) => {
         console.warn("PackTracker: service worker registration failed", error);
