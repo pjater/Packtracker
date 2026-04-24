@@ -983,13 +983,23 @@ function showDependencySelectionModal(project, version, profileId, dependencies)
 
       const chosenVersion = dependency.version || await fetchLatestCompatibleVersion(dependency.projectId, profileId);
       if (chosenVersion) {
-        const savedDependency = addMod(profileId, mapProjectVersionToMod(dependency.project, chosenVersion, [], "modrinth"));
+        const savedDependency = addMod(profileId, mapProjectVersionToMod(dependency.project, chosenVersion, [], "modrinth", []));
         showItemCompatibilityWarnings(savedDependency, profileId);
         dependencyIds.push(dependency.projectId);
       }
     }
 
-    const savedItem = addMod(profileId, mapProjectVersionToMod(project, version, dependencyIds, "modrinth"));
+    const dependencyProjects = dependencies
+      .filter((dependency) => checkboxStates.get(dependency.projectId))
+      .map((dependency) => ({
+        id: dependency.projectId,
+        slug: dependency.project?.slug || "",
+        name: dependency.project?.title || dependency.project?.name || "",
+        description: dependency.project?.description || "",
+        iconUrl: dependency.project?.icon_url || "",
+      }));
+
+    const savedItem = addMod(profileId, mapProjectVersionToMod(project, version, dependencyIds, "modrinth", dependencyProjects));
     showItemCompatibilityWarnings(savedItem, profileId);
     setActiveProfile(profileId);
     setActiveView("home");
@@ -1763,9 +1773,10 @@ function resolveAddButtonLabel() {
  * @param {object} project - Project payload.
  * @param {object} version - Version payload.
  * @param {Array<string>} dependencyIds - Required dependency ids.
+ * @param {Array<object>} [dependencyProjects] - Optional dependency metadata.
  * @returns {object} Storage-ready mod record.
  */
-function mapProjectVersionToMod(project, version, dependencyIds, source = AppState.searchSource || "modrinth") {
+function mapProjectVersionToMod(project, version, dependencyIds, source = AppState.searchSource || "modrinth", dependencyProjects = []) {
   const primaryFile = Array.isArray(version?.files)
     ? version.files.find((file) => file.primary) || version.files[0]
     : null;
@@ -1792,6 +1803,15 @@ function mapProjectVersionToMod(project, version, dependencyIds, source = AppSta
     starred: false,
     notes: "",
     dependencies: dependencyIds,
+    dependencyProjects: Array.isArray(dependencyProjects)
+      ? dependencyProjects.map((entry) => ({
+          id: String(entry?.id || "").trim(),
+          slug: String(entry?.slug || "").trim(),
+          name: String(entry?.name || "").trim(),
+          description: String(entry?.description || "").trim(),
+          iconUrl: String(entry?.iconUrl || entry?.icon_url || "").trim(),
+        })).filter((entry) => entry.id)
+      : [],
     addedAt: Date.now(),
   };
 }
