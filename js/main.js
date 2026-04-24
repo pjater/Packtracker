@@ -2203,7 +2203,7 @@
     });
 
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=20260423-26").then((registration) => {
+      navigator.serviceWorker.register("./sw.js?v=20260424-3").then((registration) => {
         registration.update().catch(() => {});
       }).catch((error) => {
         console.warn("PackTracker: service worker registration failed", error);
