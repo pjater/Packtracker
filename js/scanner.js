@@ -4,6 +4,7 @@
     AppState,
     getActiveProfile,
     notifyStateChanged,
+    updateAppSettings,
     searchProjects,
     getProjectVersions,
     cfSearchProjects,
@@ -37,6 +38,11 @@
       fileKindLabel: ".zip files",
     },
   };
+  const SCAN_PROVIDER_PREFERENCES = [
+    { value: "auto", label: "Auto" },
+    { value: "modrinth", label: "Prefer Modrinth" },
+    { value: "curseforge", label: "Prefer CurseForge" },
+  ];
   let scanSession = null;
 
 /**
@@ -182,6 +188,32 @@ function renderScanResultsModal() {
   betaText.textContent = "Scan results may be incomplete or inaccurate. It is safer to add items manually or double-check everything before adding it to your profile.";
   betaNote.append(betaTag, betaText);
 
+  const preferenceBar = document.createElement("div");
+  preferenceBar.className = "settings-inline-actions";
+  const activePreference = resolveScanProviderPreference();
+  SCAN_PROVIDER_PREFERENCES.forEach((entry) => {
+    const button = document.createElement("button");
+    button.className = entry.value === activePreference ? "btn btn-small btn-primary" : "btn btn-small";
+    button.type = "button";
+    button.textContent = entry.label;
+    button.addEventListener("click", () => {
+      if (entry.value === activePreference) {
+        return;
+      }
+      AppState.settings = typeof updateAppSettings === "function"
+        ? updateAppSettings({ updateProviderPreference: entry.value })
+        : {
+            ...(AppState.settings || {}),
+            updateProviderPreference: entry.value,
+          };
+      renderScanResultsModal();
+      if (typeof namespace.showToast === "function") {
+        namespace.showToast(`Scan provider preference set to ${entry.label}.`, "success");
+      }
+    });
+    preferenceBar.appendChild(button);
+  });
+
   const list = document.createElement("div");
   list.className = "scan-list";
   scanSession.rows.forEach((row) => {
@@ -207,7 +239,7 @@ function renderScanResultsModal() {
   doneButton.addEventListener("click", closeScanModal);
 
   actions.append(addAllButton, doneButton);
-  modal.append(header, betaNote, list, actions);
+  modal.append(header, betaNote, preferenceBar, list, actions);
   overlay.appendChild(modal);
   modalRoot.appendChild(overlay);
 
@@ -488,9 +520,13 @@ async function resolveScanSearchResult(row, profile) {
     String(row?.parsedName || "").trim(),
     String(row?.filename || "").replace(/\.(jar|zip)$/i, "").trim(),
   ].filter(Boolean)));
+  const sourcePreference = resolveScanProviderPreference();
+  const sourcesToTry = resolveScanSources(sourcePreference);
   let bestCandidate = null;
 
-  for (const source of ["modrinth", "curseforge"]) {
+  for (const source of sourcesToTry) {
+    let bestCandidateForSource = null;
+
     for (const query of queries) {
       const searchResponse = await searchScanSource(source, {
         query,
@@ -516,7 +552,7 @@ async function resolveScanSearchResult(row, profile) {
           continue;
         }
 
-        const nextVersion = sortVersionsNewestFirst(versions)[0];
+        const nextVersion = pickCompatibleScanVersion(versions, profile, projectType);
         if (!nextVersion) {
           continue;
         }
@@ -525,10 +561,23 @@ async function resolveScanSearchResult(row, profile) {
           project,
           version: nextVersion,
           score: scoreScanProjectMatch(row, project),
+          source,
         };
-        if (!bestCandidate || compareScanCandidates(candidate, bestCandidate) < 0) {
-          bestCandidate = candidate;
+        if (!bestCandidateForSource || compareScanCandidates(candidate, bestCandidateForSource) < 0) {
+          bestCandidateForSource = candidate;
         }
+      }
+    }
+
+    if (bestCandidateForSource) {
+      if (sourcePreference !== "auto" && source === sourcePreference) {
+        return {
+          project: bestCandidateForSource.project,
+          version: bestCandidateForSource.version,
+        };
+      }
+      if (!bestCandidate || compareScanCandidates(bestCandidateForSource, bestCandidate) < 0) {
+        bestCandidate = bestCandidateForSource;
       }
     }
   }
@@ -617,6 +666,30 @@ function compareScanCandidates(left, right) {
 }
 
 /**
+ * Picks the newest compatible version for one scan candidate.
+ *
+ * @param {Array<object>} versions - Available versions from one source.
+ * @param {object} profile - Active profile.
+ * @param {"mod"|"resourcepack"|"shader"} projectType - Current scan project type.
+ * @returns {object|null} Best compatible version or null.
+ */
+function pickCompatibleScanVersion(versions, profile, projectType) {
+  const sorted = sortVersionsNewestFirst(Array.isArray(versions) ? versions : []);
+  return sorted.find((version) => {
+    const matchesGameVersion = !profile?.mcVersion
+      || !Array.isArray(version?.game_versions)
+      || version.game_versions.length === 0
+      || version.game_versions.includes(profile.mcVersion);
+    const matchesLoader = projectType !== "mod"
+      || profile?.loader === "vanilla"
+      || !Array.isArray(version?.loaders)
+      || version.loaders.length === 0
+      || version.loaders.includes(profile.loader);
+    return matchesGameVersion && matchesLoader;
+  }) || null;
+}
+
+/**
  * Normalizes scan search text for loose match comparisons.
  *
  * @param {string} value - Raw text.
@@ -637,6 +710,32 @@ function normalizeScanSearchText(value) {
  */
 function resolveSearchSourceLabel(source) {
   return source === "curseforge" ? "CurseForge" : "Modrinth";
+}
+
+/**
+ * Returns the normalized scan/update provider preference.
+ *
+ * @returns {"auto"|"modrinth"|"curseforge"} Stored preference.
+ */
+function resolveScanProviderPreference() {
+  const raw = String(AppState.settings?.updateProviderPreference || "auto").trim().toLowerCase();
+  return SCAN_PROVIDER_PREFERENCES.some((entry) => entry.value === raw) ? raw : "auto";
+}
+
+/**
+ * Returns the ordered provider list for scan matching.
+ *
+ * @param {"auto"|"modrinth"|"curseforge"} preference - Active preference.
+ * @returns {Array<"modrinth"|"curseforge">} Ordered source ids.
+ */
+function resolveScanSources(preference) {
+  if (preference === "modrinth") {
+    return ["modrinth", "curseforge"];
+  }
+  if (preference === "curseforge") {
+    return ["curseforge", "modrinth"];
+  }
+  return ["modrinth", "curseforge"];
 }
 
 /**
