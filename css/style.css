@@ -2065,6 +2065,19 @@ select.form-select {
   background: var(--color-surface);
 }
 
+.dependency-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.dependency-item .mod-icon-placeholder,
+.dependency-item .mod-icon {
+  width: 40px;
+  height: 40px;
+}
+
 .version-item.is-recommended {
   border-color: rgba(var(--color-accent-rgb), 0.3);
   background: rgba(var(--color-accent-rgb), 0.06);
