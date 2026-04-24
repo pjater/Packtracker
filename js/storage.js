@@ -837,6 +837,15 @@
       notes: String(mod?.notes || ""),
       starred: Boolean(mod?.starred),
       dependencies: Array.isArray(mod?.dependencies) ? mod.dependencies.map((dependency) => String(dependency)) : [],
+      dependencyProjects: Array.isArray(mod?.dependencyProjects)
+        ? mod.dependencyProjects.map((entry) => ({
+            id: String(entry?.id || "").trim(),
+            slug: String(entry?.slug || "").trim(),
+            name: String(entry?.name || "").trim(),
+            description: String(entry?.description || "").trim(),
+            iconUrl: String(entry?.iconUrl || entry?.icon_url || "").trim(),
+          })).filter((entry) => entry.id)
+        : [],
       mcVersions: Array.isArray(mod?.mcVersions) ? mod.mcVersions.map((version) => String(version)) : [],
       loaders: Array.isArray(mod?.loaders) ? mod.loaders.map((loader) => String(loader).toLowerCase()) : [],
       addedAt: typeof mod?.addedAt === "number" ? mod.addedAt : Date.now(),
