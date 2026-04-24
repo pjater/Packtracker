@@ -23,6 +23,7 @@
     generateShareLink,
     getDependencies,
     getProject,
+    getProjects,
     getVersion,
     getProjectVersions,
     searchProjects,
@@ -471,6 +472,7 @@ function updateTabIndicator(tabBarElement) {
 function renderModCard(mod, profileId, isEditing = false) {
   const sourceProfileId = mod.sourceProfileId || profileId;
   const profile = AppState.data?.profiles.find((entry) => entry.id === sourceProfileId);
+  const itemSource = resolveTrackedItemSource(mod);
   const warnings = checkItemCompatibility(mod, profile);
   const hasErrors = warnings.some((warning) => warning.level === "error");
   const missingDependencies = getMissingDependencies(mod, profile);
@@ -547,7 +549,7 @@ function renderModCard(mod, profileId, isEditing = false) {
   meta.className = "mod-meta";
   meta.textContent = buildMetaLine([
     mod.sourceProfileName ? `From ${mod.sourceProfileName}` : "",
-    resolveSourceLabel(mod.source),
+    resolveSourceLabel(itemSource),
     `Added ${formatRelativeDate(mod.addedAt)}`,
   ]);
 
@@ -558,8 +560,8 @@ function renderModCard(mod, profileId, isEditing = false) {
   links.className = "mod-card-links";
 
   const fileLink = mod.fileUrl || mod.downloadUrl || "";
-  const isManual = mod.source === "manual";
-  const sourceLabel = isManual ? "Manual" : resolveSourceLabel(mod.source || "modrinth");
+  const isManual = itemSource === "manual";
+  const sourceLabel = isManual ? "Manual" : resolveSourceLabel(itemSource);
   const sourceButton = createButton(sourceLabel);
   sourceButton.classList.add("btn-small");
 
@@ -632,6 +634,7 @@ function renderModCard(mod, profileId, isEditing = false) {
 function renderPackCard(item, profileId, type, isEditing = false) {
   const sourceProfileId = item.sourceProfileId || profileId;
   const profile = AppState.data?.profiles.find((entry) => entry.id === sourceProfileId);
+  const itemSource = resolveTrackedItemSource(item);
   const warnings = checkItemCompatibility(item, profile);
   const hasErrors = warnings.some((warning) => warning.level === "error");
   const card = document.createElement("div");
@@ -645,7 +648,7 @@ function renderPackCard(item, profileId, type, isEditing = false) {
     card.prepend(handle);
   }
 
-  if (item.source === "manual") {
+  if (itemSource === "manual") {
     const placeholder = document.createElement("div");
     placeholder.className = "mod-icon-placeholder";
     placeholder.textContent = "↗";
@@ -678,7 +681,7 @@ function renderPackCard(item, profileId, type, isEditing = false) {
 
   const badges = document.createElement("div");
   badges.className = "item-badges";
-  badges.appendChild(createBadge("badge-source", resolveSourceLabel(item.source)));
+  badges.appendChild(createBadge("badge-source", resolveSourceLabel(itemSource)));
   if (item.version || item.versionNumber) {
     badges.appendChild(createBadge("badge-version", item.version || item.versionNumber));
   }
@@ -708,8 +711,8 @@ function renderPackCard(item, profileId, type, isEditing = false) {
   links.className = "mod-card-links";
 
   const fileLink = item.fileUrl || item.downloadUrl || "";
-  const isManual = item.source === "manual";
-  const sourceLabel = isManual ? "Manual" : resolveSourceLabel(item.source || "modrinth");
+  const isManual = itemSource === "manual";
+  const sourceLabel = isManual ? "Manual" : resolveSourceLabel(itemSource);
   const sourceButton = createButton(sourceLabel);
   sourceButton.classList.add("btn-small");
 
@@ -866,8 +869,80 @@ function getMissingDependencies(mod, profile) {
     return [];
   }
 
-  const installedIds = new Set(profile.mods.map((entry) => entry.id));
-  return mod.dependencies.filter((dependencyId) => !installedIds.has(dependencyId));
+  const installedKeys = buildInstalledDependencyKeys(profile);
+  const dependencyProjects = Array.isArray(mod?.dependencyProjects) ? mod.dependencyProjects : [];
+
+  return mod.dependencies.filter((dependencyId) => {
+    const dependencyProject = dependencyProjects.find((entry) => String(entry?.id || "") === String(dependencyId || ""));
+    return !isDependencyAlreadyInstalled(installedKeys, dependencyId, dependencyProject);
+  });
+}
+
+/**
+ * Builds normalized lookup sets for installed mods so dependency checks can
+ * match across providers by id, slug, and visible project name.
+ *
+ * @param {object|null} profile - Target profile.
+ * @returns {{ids:Set<string>, slugs:Set<string>, names:Set<string>}} Installed dependency keys.
+ */
+function buildInstalledDependencyKeys(profile) {
+  const mods = Array.isArray(profile?.mods) ? profile.mods : [];
+  const ids = new Set();
+  const slugs = new Set();
+  const names = new Set();
+
+  mods.forEach((entry) => {
+    [
+      entry?.id,
+      entry?.projectId,
+      entry?.modrinthId,
+    ].forEach((value) => {
+      const safeValue = String(value || "").trim();
+      if (safeValue) {
+        ids.add(safeValue);
+      }
+    });
+
+    const safeSlug = normalizeProjectIdentityValue(entry?.slug || "");
+    if (safeSlug) {
+      slugs.add(safeSlug);
+    }
+
+    const safeName = normalizeProjectIdentityValue(entry?.name || "");
+    if (safeName) {
+      names.add(safeName);
+    }
+  });
+
+  return { ids, slugs, names };
+}
+
+/**
+ * Checks whether one dependency is already satisfied by an installed mod,
+ * even when that installed mod came from the other provider.
+ *
+ * @param {{ids:Set<string>, slugs:Set<string>, names:Set<string>}} installedKeys - Installed lookup sets.
+ * @param {string} dependencyId - Raw dependency project id.
+ * @param {{id?:string, slug?:string, name?:string}|null} dependencyProject - Optional dependency metadata.
+ * @returns {boolean} True when the dependency is already present.
+ */
+function isDependencyAlreadyInstalled(installedKeys, dependencyId, dependencyProject = null) {
+  const safeId = String(dependencyId || "").trim();
+  if (safeId && installedKeys.ids.has(safeId)) {
+    return true;
+  }
+
+  const safeSlug = normalizeProjectIdentityValue(dependencyProject?.slug || "");
+  if (safeSlug && installedKeys.slugs.has(safeSlug)) {
+    return true;
+  }
+
+  const safeName = normalizeProjectIdentityValue(dependencyProject?.name || "");
+  if (safeName && installedKeys.names.has(safeName)) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -1513,7 +1588,7 @@ async function runBulkUpdateQueue(profileId, tab, targetVersion) {
         continue;
       }
 
-      applyBulkUpdateToItem(currentItem, candidate.project, candidate.version, tab);
+      applyBulkUpdateToItem(currentItem, candidate.project, candidate.version, tab, candidate.source);
       row.status = UPDATE_ROW_STATES.UPDATED;
       row.message = candidate.message;
       row.toVersion = candidate.version.version_number || "";
@@ -1542,16 +1617,17 @@ async function runBulkUpdateQueue(profileId, tab, targetVersion) {
  * @returns {Promise<{kind:"update", project:object, version:object, message:string}|{kind:"skip", message:string}>} Update candidate.
  */
 async function resolveBulkUpdateCandidate(item, tab, targetVersion, profile) {
-  if (item.source === "manual") {
+  const currentSource = resolveTrackedItemSource(item);
+  if (currentSource === "manual") {
     return { kind: "skip", message: "Manual item or missing project link" };
   }
 
   const projectType = tab === "resourcepacks" ? "resourcepack" : tab === "shaders" ? "shader" : "mod";
   const updatePreference = resolveUpdateProviderPreference();
-  const preferredSource = updatePreference === "auto" ? (item.source || "modrinth") : updatePreference;
-  const sourcesToTry = resolveBulkUpdateSources(item, updatePreference);
+  const preferredSource = updatePreference === "auto" ? currentSource : updatePreference;
+  const sourcesToTry = resolveBulkUpdateSources(item, updatePreference, currentSource);
   let bestCandidate = null;
-  let fallbackMessage = "No versions found";
+  const fallbackMessages = {};
 
   for (const source of sourcesToTry) {
     const candidate = await resolveBulkUpdateCandidateForSource(item, tab, targetVersion, profile, projectType, source);
@@ -1565,14 +1641,26 @@ async function resolveBulkUpdateCandidate(item, tab, targetVersion, profile) {
       continue;
     }
 
-    fallbackMessage = candidate.message || fallbackMessage;
+    if (candidate.stopFallback && source === preferredSource) {
+      return { kind: "skip", message: candidate.message || "Already on the newest compatible version" };
+    }
+    if (candidate.message) {
+      fallbackMessages[source] = candidate.message;
+    }
   }
 
   if (bestCandidate) {
     return bestCandidate;
   }
 
-  return { kind: "skip", message: fallbackMessage };
+  return {
+    kind: "skip",
+    message: fallbackMessages[preferredSource]
+      || fallbackMessages[currentSource]
+      || fallbackMessages.modrinth
+      || fallbackMessages.curseforge
+      || "No versions found",
+  };
 }
 
 /**
@@ -1584,15 +1672,18 @@ async function resolveBulkUpdateCandidate(item, tab, targetVersion, profile) {
  * @param {object} profile - Owning profile.
  * @param {"mod"|"resourcepack"|"shader"} projectType - Resolved project type.
  * @param {"modrinth"|"curseforge"} source - Candidate source.
- * @returns {Promise<{kind:"update", project:object, version:object, message:string, source:string}|{kind:"skip", message:string}>} Candidate result.
+ * @param {{allowSameVersion?: boolean}} [options] - Resolution behavior flags.
+ * @returns {Promise<{kind:"update", project:object, version:object, message:string, source:string}|{kind:"skip", message:string, stopFallback?:boolean}>} Candidate result.
  */
-async function resolveBulkUpdateCandidateForSource(item, tab, targetVersion, profile, projectType, source) {
+async function resolveBulkUpdateCandidateForSource(item, tab, targetVersion, profile, projectType, source, options = {}) {
+  const currentSource = resolveTrackedItemSource(item);
+  const allowSameVersion = options.allowSameVersion === true;
   const project = await resolveBulkUpdateProjectForSource(item, projectType, profile, source);
   if (project?.error) {
     return { kind: "skip", message: project.message || `Could not load ${resolveSourceLabel(source)} project` };
   }
 
-  const projectId = resolveNormalizedProjectId(project, source === item.source ? item : {});
+  const projectId = resolveNormalizedProjectId(project, source === resolveTrackedItemSource(item) ? item : {});
   if (!projectId) {
     return { kind: "skip", message: `No ${resolveSourceLabel(source)} match found` };
   }
@@ -1628,7 +1719,16 @@ async function resolveBulkUpdateCandidateForSource(item, tab, targetVersion, pro
   const nextVersion = compatibleVersions[0];
   const currentVersion = item.versionNumber || item.version || "";
   if ((nextVersion.version_number || "") === currentVersion) {
-    return { kind: "skip", message: `Already on ${targetVersion}` };
+    if (allowSameVersion && source !== currentSource) {
+      return {
+        kind: "update",
+        project,
+        version: nextVersion,
+        source,
+        message: `Switched to ${resolveSourceLabel(source)} on ${nextVersion.version_number || targetVersion}`,
+      };
+    }
+    return { kind: "skip", message: `Already on ${targetVersion}`, stopFallback: true };
   }
 
   return {
@@ -1650,7 +1750,7 @@ async function resolveBulkUpdateCandidateForSource(item, tab, targetVersion, pro
  * @returns {Promise<object>} Project payload or error-like object.
  */
 async function resolveBulkUpdateProjectForSource(item, projectType, profile, source) {
-  const currentSource = item.source || "modrinth";
+  const currentSource = resolveTrackedItemSource(item);
   const directProjectId = source === currentSource ? resolveProjectId(item) : "";
   if (directProjectId) {
     return getProjectForSource(source, directProjectId);
@@ -1790,12 +1890,34 @@ function compareBulkUpdateCandidates(left, right, preferredSource) {
  * @param {"auto"|"modrinth"|"curseforge"} updatePreference - Saved preference.
  * @returns {Array<"modrinth"|"curseforge">} Ordered source candidates.
  */
-function resolveBulkUpdateSources(item, updatePreference) {
-  const currentSource = item.source || "modrinth";
+function resolveBulkUpdateSources(item, updatePreference, resolvedCurrentSource = "") {
+  const currentSource = resolvedCurrentSource || resolveTrackedItemSource(item);
   const orderedSources = updatePreference === "auto"
     ? [currentSource, "modrinth", "curseforge"]
     : [updatePreference, currentSource, "modrinth", "curseforge"];
   return Array.from(new Set(orderedSources)).filter((source) => source === "modrinth" || source === "curseforge");
+}
+
+/**
+ * Resolves the effective provider currently associated with a tracked item.
+ *
+ * @param {object} item - Stored tracked item.
+ * @returns {"modrinth"|"curseforge"|"manual"} Effective item source.
+ */
+function resolveTrackedItemSource(item) {
+  const explicitSource = String(item?.source || "").trim().toLowerCase();
+  const url = String(item?.modrinthUrl || item?.fileUrl || item?.downloadUrl || "").trim().toLowerCase();
+  if (url.includes("curseforge.com")) {
+    return "curseforge";
+  }
+  if (url.includes("modrinth.com")) {
+    return "modrinth";
+  }
+  if (explicitSource === "modrinth" || explicitSource === "curseforge" || explicitSource === "manual") {
+    return explicitSource;
+  }
+
+  return "manual";
 }
 
 /**
@@ -1831,12 +1953,12 @@ function normalizeProjectIdentityValue(value) {
  * @param {object} version - Chosen Modrinth version.
  * @param {"mods"|"resourcepacks"|"shaders"} tab - Active tab key.
  */
-function applyBulkUpdateToItem(item, project, version, tab) {
+function applyBulkUpdateToItem(item, project, version, tab, forcedSource = "") {
   const primaryFile = Array.isArray(version?.files)
     ? version.files.find((file) => file.primary) || version.files[0]
     : null;
   const nextProjectId = resolveNormalizedProjectId(project, item);
-  const nextSource = project?.source || item.source || "modrinth";
+  const nextSource = forcedSource || project?.source || resolveTrackedItemSource(item) || "modrinth";
   const nextProjectType = tab === "resourcepacks" ? "resourcepack" : tab === "shaders" ? "shader" : "mod";
   const nextSlug = project?.slug || item.slug || nextProjectId;
 
@@ -1859,7 +1981,7 @@ function applyBulkUpdateToItem(item, project, version, tab) {
       loaders: Array.isArray(version.loaders) ? version.loaders : item.loaders,
       source: nextSource,
     });
-    return;
+    return item;
   }
 
   Object.assign(item, {
@@ -1878,6 +2000,7 @@ function applyBulkUpdateToItem(item, project, version, tab) {
     author: project.author || item.author || "Unknown author",
     source: nextSource,
   });
+  return item;
 }
 
 /**
@@ -2711,9 +2834,25 @@ async function switchTrackedItemProvider(item, profileId, type, nextSource) {
     return false;
   }
 
+  const currentSource = resolveTrackedItemSource(item);
+  if (currentSource === nextSource) {
+    if (typeof namespace.showToast === "function") {
+      namespace.showToast(`${item.name || "Item"} is already using ${resolveSourceLabel(nextSource)}.`, "warning");
+    }
+    return false;
+  }
+
   const projectType = type === "mod" ? "mod" : type;
   const tab = type === "mod" ? "mods" : type === "resourcepack" ? "resourcepacks" : "shaders";
-  const candidate = await resolveBulkUpdateCandidateForSource(item, tab, profile.mcVersion, profile, projectType, nextSource);
+  const candidate = await resolveBulkUpdateCandidateForSource(
+    item,
+    tab,
+    profile.mcVersion,
+    profile,
+    projectType,
+    nextSource,
+    { allowSameVersion: true }
+  );
   if (!candidate || candidate.kind !== "update" || !candidate.project || !candidate.version) {
     if (typeof namespace.showToast === "function") {
       namespace.showToast(candidate?.message || `No ${resolveSourceLabel(nextSource)} match found`, "warning");
@@ -2721,7 +2860,7 @@ async function switchTrackedItemProvider(item, profileId, type, nextSource) {
     return false;
   }
 
-  const updatedItem = applyBulkUpdateToItem(item, candidate.project, candidate.version, tab);
+  const updatedItem = applyBulkUpdateToItem(item, candidate.project, candidate.version, tab, candidate.source);
   showCompatibilityWarnings(updatedItem, profile);
   if (typeof notifyStateChanged === "function") {
     notifyStateChanged("switch-provider");
@@ -2777,6 +2916,23 @@ async function showMissingDependenciesModal(mod, profile, missingDependencies) {
     return;
   }
 
+  const dependencyProjects = await resolveDependencyProjectMetadata(
+    missingDependencies,
+    Array.isArray(mod?.dependencyProjects) ? mod.dependencyProjects : []
+  );
+  const installedKeys = buildInstalledDependencyKeys(profile);
+  const unresolvedDependencies = missingDependencies.filter((dependencyId) => {
+    const dependencyProject = dependencyProjects.find((entry) => String(entry?.id || "") === String(dependencyId || ""));
+    return !isDependencyAlreadyInstalled(installedKeys, dependencyId, dependencyProject);
+  });
+
+  if (unresolvedDependencies.length === 0) {
+    if (typeof namespace.showToast === "function") {
+      namespace.showToast("All required dependencies are already installed.", "success");
+    }
+    return;
+  }
+
   const overlay = createModalOverlay();
   const modal = createModalCard();
   modal.classList.add("modal-wide");
@@ -2785,9 +2941,13 @@ async function showMissingDependenciesModal(mod, profile, missingDependencies) {
   const list = document.createElement("div");
   list.className = "dependency-list";
 
-  missingDependencies.forEach((dependencyId) => {
+  unresolvedDependencies.forEach((dependencyId) => {
     const item = document.createElement("div");
     item.className = "dependency-item";
+
+    const icon = document.createElement("div");
+    icon.className = "dependency-icon";
+    icon.appendChild(createIconNode(dependencyId, "", 40));
 
     const text = document.createElement("div");
     text.className = "dependency-text";
@@ -2813,17 +2973,34 @@ async function showMissingDependenciesModal(mod, profile, missingDependencies) {
       }
     });
 
-    item.append(text, addButton);
+    item.append(icon, text, addButton);
     list.appendChild(item);
 
-    getProject(dependencyId).then((project) => {
-      if (!project.error) {
-        name.textContent = project.title || project.name || dependencyId;
-        meta.textContent = project.description || dependencyId;
-      } else {
+    const cachedProject = dependencyProjects.find((entry) => String(entry?.id || "") === String(dependencyId || ""));
+    if (cachedProject) {
+      icon.replaceChildren(createIconNode(
+        cachedProject.name || dependencyId,
+        cachedProject.iconUrl || "",
+        40
+      ));
+      name.textContent = cachedProject.name || dependencyId;
+      meta.textContent = cachedProject.description || dependencyId;
+    } else {
+      getProject(dependencyId).then((project) => {
+        if (!project.error) {
+          const normalizedProject = normalizeDependencyProject(project);
+          icon.replaceChildren(createIconNode(
+            normalizedProject.name || dependencyId,
+            normalizedProject.iconUrl || "",
+            40
+          ));
+          name.textContent = normalizedProject.name || dependencyId;
+          meta.textContent = normalizedProject.description || dependencyId;
+        } else {
           meta.textContent = project.message || "Failed to fetch project details.";
-      }
-    });
+        }
+      });
+    }
   });
 
   const actions = createActionRow();
@@ -2834,6 +3011,62 @@ async function showMissingDependenciesModal(mod, profile, missingDependencies) {
   modal.append(title, subtitle, list, actions);
   overlay.appendChild(modal);
   mountModal(overlay);
+}
+
+/**
+ * Resolves dependency project metadata so cross-provider dependency detection can
+ * compare names and slugs, not just raw Modrinth ids.
+ *
+ * @param {Array<string>} dependencyIds - Dependency project ids.
+ * @param {Array<object>} cachedProjects - Existing dependency metadata stored on the mod.
+ * @returns {Promise<Array<{id:string, slug:string, name:string, description:string, iconUrl:string}>>} Normalized dependency metadata.
+ */
+async function resolveDependencyProjectMetadata(dependencyIds, cachedProjects = []) {
+  const normalizedCached = Array.isArray(cachedProjects)
+    ? cachedProjects.map((entry) => normalizeDependencyProject(entry)).filter((entry) => entry.id)
+    : [];
+  const missingIds = dependencyIds.filter((dependencyId) => {
+    const safeId = String(dependencyId || "").trim();
+    return safeId && !normalizedCached.some((entry) => entry.id === safeId);
+  });
+
+  if (missingIds.length === 0) {
+    return normalizedCached;
+  }
+
+  let fetchedProjects = [];
+  if (typeof getProjects === "function") {
+    const response = await getProjects(missingIds);
+    if (!response?.error && Array.isArray(response)) {
+      fetchedProjects = response;
+    }
+  }
+
+  if (fetchedProjects.length === 0) {
+    const responses = await Promise.all(missingIds.map((dependencyId) => getProject(dependencyId)));
+    fetchedProjects = responses.filter((entry) => !entry?.error);
+  }
+
+  return [
+    ...normalizedCached,
+    ...fetchedProjects.map((entry) => normalizeDependencyProject(entry)).filter((entry) => entry.id),
+  ];
+}
+
+/**
+ * Normalizes one dependency project payload into a compact reusable shape.
+ *
+ * @param {object} project - Raw project payload.
+ * @returns {{id:string, slug:string, name:string, description:string, iconUrl:string}} Normalized metadata.
+ */
+function normalizeDependencyProject(project) {
+  return {
+    id: String(project?.id || project?.project_id || "").trim(),
+    slug: String(project?.slug || "").trim(),
+    name: String(project?.title || project?.name || "").trim(),
+    description: String(project?.description || "").trim(),
+    iconUrl: String(project?.icon_url || project?.iconUrl || "").trim(),
+  };
 }
 
 /**
@@ -2868,8 +3101,13 @@ async function addDependencyToProfile(projectId, profile) {
         .filter((entry) => entry?.dependency_type === "required")
         .map((entry) => entry.project_id)
         .filter(Boolean);
+  const dependencyProjects = dependencies.error
+    ? []
+    : Array.isArray(dependencies.projects)
+      ? dependencies.projects.map((entry) => normalizeDependencyProject(entry))
+      : [];
 
-  const savedItem = addMod(profile.id, mapProjectVersionToMod(project, version, dependencyIds));
+  const savedItem = addMod(profile.id, mapProjectVersionToMod(project, version, dependencyIds, dependencyProjects));
   showCompatibilityWarnings(savedItem, profile);
   return true;
 }
@@ -2935,9 +3173,10 @@ function showItemMenu(item, profileId, type, x, y) {
   });
   menu.appendChild(downloadItem);
 
-  const alternateSource = item.source === "curseforge"
+  const currentSource = resolveTrackedItemSource(item);
+  const alternateSource = currentSource === "curseforge"
     ? "modrinth"
-    : item.source === "modrinth"
+    : currentSource === "modrinth"
       ? "curseforge"
       : "";
   if (alternateSource) {
@@ -3031,9 +3270,10 @@ function showDeleteProfileModal(profileId, name) {
  * @param {object} project - Modrinth project payload.
  * @param {object} version - Modrinth version payload.
  * @param {Array<string>} dependencyIds - Required dependency project ids.
+ * @param {Array<object>} [dependencyProjects] - Optional normalized dependency metadata.
  * @returns {object} Storage-ready mod item.
  */
-function mapProjectVersionToMod(project, version, dependencyIds) {
+function mapProjectVersionToMod(project, version, dependencyIds, dependencyProjects = []) {
   const primaryFile = Array.isArray(version?.files)
     ? version.files.find((file) => file.primary) || version.files[0]
     : null;
@@ -3062,6 +3302,9 @@ function mapProjectVersionToMod(project, version, dependencyIds) {
     starred: false,
     notes: "",
     dependencies: dependencyIds,
+    dependencyProjects: Array.isArray(dependencyProjects)
+      ? dependencyProjects.map((entry) => normalizeDependencyProject(entry)).filter((entry) => entry.id)
+      : [],
     addedAt: Date.now(),
   };
 }
