@@ -85,7 +85,14 @@
    * @returns {object} Reset settings snapshot.
    */
   function resetAppSettings() {
-    const reset = saveAppSettings(createDefaultAppSettings());
+    const current = loadAppSettings();
+    const reset = saveAppSettings({
+      ...createDefaultAppSettings(),
+      onboardingCompleted: true,
+      firstOpenedAt: Number(current.firstOpenedAt || 0) || Date.now(),
+      lastOpenedAt: Number(current.lastOpenedAt || 0) || Date.now(),
+      visitCount: Math.max(1, Number(current.visitCount || 0) || 1),
+    });
     if (typeof notifyStateChanged === "function") {
       notifyStateChanged("settings-reset");
     }
@@ -344,7 +351,7 @@
 
     const payload = {
       version: AppState.data?.version ?? 1,
-      profiles: [profile],
+      profiles: [createPortableProfileExport(profile)],
     };
 
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -360,6 +367,34 @@
     anchor.remove();
     URL.revokeObjectURL(url);
     showToast("Profile exported");
+  }
+
+  /**
+   * Creates a profile export that excludes virtual-favorites state.
+   *
+   * @param {object} profile - Source profile.
+   * @returns {object} Portable profile.
+   */
+  function createPortableProfileExport(profile) {
+    const clone = structuredClone(normalizeProfile(profile));
+    clone.mods = clone.mods.map(stripFavoriteExportState);
+    clone.resourcePacks = clone.resourcePacks.map(stripFavoriteExportState);
+    clone.shaders = clone.shaders.map(stripFavoriteExportState);
+    return clone;
+  }
+
+  /**
+   * Removes favorite-only state from exported items.
+   *
+   * @param {object} item - Stored item.
+   * @returns {object} Export item.
+   */
+  function stripFavoriteExportState(item) {
+    const nextItem = { ...item };
+    nextItem.starred = false;
+    delete nextItem.sourceProfileId;
+    delete nextItem.sourceProfileName;
+    return nextItem;
   }
 
   /**
