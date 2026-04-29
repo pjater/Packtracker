@@ -514,8 +514,10 @@
     input.type = type;
     input.value = value;
     input.placeholder = options.placeholder || "";
+    input.maxLength = options.maxLength || resolveProfileInputMaxLength(label);
 
     group.append(labelElement, input);
+    attachCharacterCounter(group, input);
     return { group, input };
   }
 
@@ -540,6 +542,7 @@
     input.type = "text";
     input.value = initialValue;
     input.placeholder = getLatestMinecraftVersion();
+    input.maxLength = 16;
     input.dataset.autoDefault = options.autoDefault ? "true" : "false";
     input.dataset.autoDefaultValue = initialValue;
 
@@ -552,12 +555,53 @@
     void hydrateMinecraftVersions(datalist, input);
 
     group.append(labelElement, input, datalist);
+    attachCharacterCounter(group, input);
     return {
       group,
       getValue() {
         return input.value.trim();
       },
     };
+  }
+
+  /**
+   * Adds a live character counter to a sidebar form field.
+   *
+   * @param {HTMLElement} group - Field group.
+   * @param {HTMLInputElement} input - Input element.
+   */
+  function attachCharacterCounter(group, input) {
+    if (!input.maxLength || input.maxLength < 0) {
+      return;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.className = "field-counter-wrap";
+    const counter = document.createElement("span");
+    counter.className = "field-counter";
+    const update = () => {
+      counter.textContent = `${input.value.length}/${input.maxLength}`;
+    };
+    input.replaceWith(wrapper);
+    wrapper.append(input, counter);
+    input.addEventListener("input", update);
+    update();
+  }
+
+  /**
+   * Chooses limits for profile form text fields.
+   *
+   * @param {string} label - Field label.
+   * @returns {number} Maximum character count.
+   */
+  function resolveProfileInputMaxLength(label) {
+    const normalized = String(label || "").toLowerCase();
+    if (normalized.includes("profile name")) {
+      return 48;
+    }
+    if (normalized.includes("version")) {
+      return 16;
+    }
+    return 80;
   }
 
   /**
