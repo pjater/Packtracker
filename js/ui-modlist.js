@@ -70,6 +70,8 @@
     resourcepacks: false,
     shaders: false,
   };
+  const PROFILE_LIST_CONTROLS_STORAGE_KEY = "packtracker_profile_list_controls_v1";
+  const profileListControls = loadProfileListControls();
   let activeListDragHandle = null;
   let downloadSession = null;
   let updateSession = null;
@@ -81,6 +83,56 @@
 
   function translate(key, fallback) {
     return typeof namespace.t === "function" ? namespace.t(key, fallback) : fallback;
+  }
+
+  /**
+   * Loads persisted profile-list search/sort controls.
+   *
+   * @returns {{mods:object, resourcepacks:object, shaders:object}} Controls state.
+   */
+  function loadProfileListControls() {
+    const fallback = {
+      mods: { query: "", sort: "custom" },
+      resourcepacks: { query: "", sort: "custom" },
+      shaders: { query: "", sort: "custom" },
+    };
+    try {
+      const raw = localStorage.getItem(PROFILE_LIST_CONTROLS_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return {
+        mods: normalizeProfileListControl(parsed.mods, fallback.mods),
+        resourcepacks: normalizeProfileListControl(parsed.resourcepacks, fallback.resourcepacks),
+        shaders: normalizeProfileListControl(parsed.shaders, fallback.shaders),
+      };
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  /**
+   * Persists profile-list search/sort controls.
+   */
+  function saveProfileListControls() {
+    try {
+      localStorage.setItem(PROFILE_LIST_CONTROLS_STORAGE_KEY, JSON.stringify(profileListControls));
+    } catch (error) {
+      console.warn("PackTracker: failed to save profile list controls", error);
+    }
+  }
+
+  /**
+   * Normalizes one tab's list controls.
+   *
+   * @param {object} value - Candidate controls.
+   * @param {object} fallback - Fallback controls.
+   * @returns {{query:string, sort:string}} Normalized controls.
+   */
+  function normalizeProfileListControl(value, fallback) {
+    const sort = ["custom", "az", "za"].includes(value?.sort) ? value.sort : fallback.sort;
+    return {
+      query: String(value?.query || "").slice(0, 120),
+      sort,
+    };
   }
 
 /**
@@ -232,6 +284,21 @@ function renderTabContent(tab) {
   buttons.className = "profile-toolbar";
   const isEditing = layoutEditState[tab];
 
+  const renderContentPanel = () => {
+    const root = document.getElementById(HOME_VIEW_ID);
+    if (!root) {
+      return;
+    }
+
+    const newContent = renderTabContent(tab);
+    const old = root.querySelector(".content-panel");
+    if (old) {
+      old.replaceWith(newContent);
+    } else {
+      root.appendChild(newContent);
+    }
+  };
+
   if (!isFavoritesView) {
     const searchButton = createButton(translate("addViaBrowse", "+ Add via Browse"), "btn-accent");
     searchButton.replaceChildren(
@@ -248,6 +315,7 @@ function renderTabContent(tab) {
             query: "",
             projectType: definition.projectType,
             sourceTab: tab,
+            profileId: profile.id,
           },
         })
       );
@@ -324,16 +392,7 @@ function renderTabContent(tab) {
     );
     editLayoutButton.addEventListener("click", () => {
       layoutEditState[tab] = !layoutEditState[tab];
-      const root = document.getElementById(HOME_VIEW_ID);
-      if (root) {
-        const newContent = renderTabContent(tab);
-        const old = root.querySelector(".content-panel");
-        if (old) {
-          old.replaceWith(newContent);
-        } else {
-          root.appendChild(newContent);
-        }
-      }
+      renderContentPanel();
     });
     buttons.appendChild(editLayoutButton);
 
@@ -345,15 +404,77 @@ function renderTabContent(tab) {
         }
       });
     }
-  } else {
-    buttons.append(createViewToggle(tab));
+  }
+
+  const downloadButton = createButton(resolveDownloadButtonLabel(tab));
+  downloadButton.replaceChildren(
+    createIconLabelContent(
+      "\u2b07",
+      resolveDownloadButtonLabel(tab).replace(/^[^\s]+\s*/, ""),
+      "btn-icon-download-zip"
+    )
+  );
+  downloadButton.addEventListener("click", async () => {
+    downloadButton.disabled = true;
+    const originalLabel = resolveDownloadButtonLabel(tab).replace(/^[^\s]+\s*/, "");
+    downloadButton.textContent = translate("bundling", "Bundling...");
+    try {
+      if (isFavoritesView) {
+        await beginVirtualDownloadFlow(profile, tab);
+      } else {
+        await beginDownloadFlow(profile.id, tab);
+      }
+    } catch (error) {
+      if (typeof namespace.showToast === "function") {
+        namespace.showToast(error instanceof Error ? error.message : "ZIP download failed", "danger");
+      }
+    } finally {
+      downloadButton.disabled = false;
+      downloadButton.replaceChildren(
+        createIconLabelContent(
+          "\u2b07",
+          originalLabel,
+          "btn-icon-download-zip"
+        )
+      );
+    }
+  });
+
+  const editLayoutButton = document.createElement("button");
+  editLayoutButton.type = "button";
+  editLayoutButton.className = isEditing
+    ? "btn btn-primary btn-small"
+    : "btn btn-small";
+  editLayoutButton.replaceChildren(
+    createIconLabelContent(
+      isEditing ? "\u2713" : "\u270E",
+      isEditing ? translate("doneEditing", "Done editing") : translate("editLayout", "Edit layout"),
+      isEditing ? "btn-icon-check" : "btn-icon-pencil"
+    )
+  );
+  editLayoutButton.addEventListener("click", () => {
+    layoutEditState[tab] = !layoutEditState[tab];
+    renderContentPanel();
+  });
+
+  if (isFavoritesView) {
+    buttons.append(downloadButton, createViewToggle(tab), editLayoutButton);
   }
   actions.append(title, buttons);
   container.appendChild(actions);
 
-  const items = getTabItems(profile, tab);
+  const rawItems = getTabItems(profile, tab);
+  const controlsRow = createProfileListControls(tab, rawItems, isEditing, renderContentPanel);
+  container.appendChild(controlsRow);
+
+  if (rawItems.length === 0) {
+    container.appendChild(isFavoritesView ? createFavoritesEmptyState(definition) : createEmptyState(definition, profile.id));
+    return container;
+  }
+
+  const items = getVisibleTabItems(rawItems, tab);
   if (items.length === 0) {
-    container.appendChild(createEmptyState(definition));
+    container.appendChild(createNoMatchesPanel());
     return container;
   }
 
@@ -1191,8 +1312,10 @@ function showModNotesModal(profileId, modId) {
   label.className = "form-label";
   label.textContent = "Notes";
   const textarea = document.createElement("textarea");
+  textarea.maxLength = 1200;
   textarea.value = mod.notes || "";
   fieldGroup.append(label, textarea);
+  attachCharacterCounter(fieldGroup, textarea);
 
   const actions = createActionRow();
   const cancelButton = createButton("Cancel");
@@ -1239,8 +1362,10 @@ function showItemNotesModal(profileId, itemId, type) {
   label.textContent = "Notes";
 
   const textarea = document.createElement("textarea");
+  textarea.maxLength = 1200;
   textarea.value = item.notes || "";
   fieldGroup.append(label, textarea);
+  attachCharacterCounter(fieldGroup, textarea);
 
   const actions = createActionRow();
   const cancelButton = createButton("Cancel");
@@ -1285,7 +1410,9 @@ function showAddManualModal(profileId, type) {
   notesLabel.className = "form-label";
   notesLabel.textContent = "Notes";
   const notesInput = document.createElement("textarea");
+  notesInput.maxLength = 1200;
   notesGroup.append(notesLabel, notesInput);
+  attachCharacterCounter(notesGroup, notesInput);
 
   const actions = createActionRow();
   const cancelButton = createButton("Cancel");
@@ -1364,12 +1491,244 @@ function getTabItems(profile, tab) {
 }
 
 /**
+ * Returns searched and sorted items for the active profile tab.
+ *
+ * @param {Array<object>} items - Raw tab items.
+ * @param {"mods"|"resourcepacks"|"shaders"} tab - Active tab id.
+ * @returns {Array<object>} Visible item list.
+ */
+function getVisibleTabItems(items, tab) {
+  const controls = profileListControls[tab] || profileListControls.mods;
+  const query = String(controls.query || "").trim().toLowerCase();
+  const filtered = query
+    ? items.filter((item) => {
+        const haystack = [
+          item.name,
+          item.author,
+          item.description,
+          item.version,
+          item.versionNumber,
+          item.sourceProfileName,
+        ].join(" ").toLowerCase();
+        return haystack.includes(query);
+      })
+    : [...items];
+
+  if (controls.sort === "az") {
+    return sortItemsByName(filtered, "asc");
+  }
+  if (controls.sort === "za") {
+    return sortItemsByName(filtered, "desc");
+  }
+  return filtered;
+}
+
+/**
+ * Creates search and sort controls for the current profile item list.
+ *
+ * @param {"mods"|"resourcepacks"|"shaders"} tab - Active tab id.
+ * @param {Array<object>} items - Raw tab items.
+ * @param {boolean} isEditing - Whether drag order editing is active.
+ * @param {() => void} rerender - Renders the active tab panel.
+ * @returns {HTMLDivElement} Toolbar row.
+ */
+function createProfileListControls(tab, items, isEditing, rerender) {
+  const controls = profileListControls[tab] || profileListControls.mods;
+  if (isEditing && controls.sort !== "custom") {
+    controls.sort = "custom";
+    saveProfileListControls();
+  }
+  if (isEditing && controls.query) {
+    controls.query = "";
+    saveProfileListControls();
+  }
+
+  const row = document.createElement("div");
+  row.className = "profile-list-controls";
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "profile-list-search";
+  search.maxLength = 120;
+  search.placeholder = `Search ${resolveTabLabel(tab).toLowerCase()}...`;
+  search.value = controls.query || "";
+  search.disabled = isEditing;
+  search.addEventListener("input", () => {
+    controls.query = search.value;
+    saveProfileListControls();
+    rerender();
+    window.requestAnimationFrame(() => {
+      const nextSearch = document.querySelector(".profile-list-search");
+      if (nextSearch instanceof HTMLInputElement && !nextSearch.disabled) {
+        nextSearch.focus();
+        nextSearch.setSelectionRange(nextSearch.value.length, nextSearch.value.length);
+      }
+    });
+  });
+
+  const sortSelect = createProfileSortSelect(controls.sort, isEditing, (value) => {
+    controls.sort = value;
+    saveProfileListControls();
+    rerender();
+  });
+
+  const meta = document.createElement("div");
+  meta.className = "profile-list-count";
+  const visibleCount = getVisibleTabItems(items, tab).length;
+  meta.textContent = `${visibleCount}/${items.length} ${translate("items", "items")}`;
+
+  row.append(search, sortSelect, meta);
+  return row;
+}
+
+/**
+ * Creates the A-Z/Z-A/custom profile-list sort selector.
+ *
+ * @param {"custom"|"az"|"za"} selected - Current sort mode.
+ * @param {boolean} disabled - Whether sorting is disabled while editing order.
+ * @param {(value:"custom"|"az"|"za") => void} onChange - Selection handler.
+ * @returns {HTMLDivElement} Sort control.
+ */
+function createProfileSortSelect(selected, disabled, onChange) {
+  const options = [
+    { value: "custom", label: "Custom" },
+    { value: "az", label: "A to Z" },
+    { value: "za", label: "Z to A" },
+  ];
+
+  const currentValue = options.some((entry) => entry.value === selected) ? selected : "custom";
+  const select = document.createElement("div");
+  select.className = disabled ? "filter-select profile-sort-select is-disabled" : "filter-select profile-sort-select";
+
+  const trigger = document.createElement("button");
+  trigger.className = "filter-trigger";
+  trigger.type = "button";
+  trigger.disabled = disabled;
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+
+  const triggerValue = document.createElement("span");
+  triggerValue.className = "filter-trigger-value";
+  triggerValue.textContent = options.find((entry) => entry.value === currentValue)?.label || "Custom";
+
+  const caret = document.createElement("span");
+  caret.className = "filter-trigger-caret";
+  caret.textContent = "\u25BE";
+  trigger.append(triggerValue, caret);
+
+  const menu = document.createElement("div");
+  menu.className = "filter-menu";
+  menu.setAttribute("role", "listbox");
+  let isOpen = false;
+
+  const closeMenu = () => {
+    if (!isOpen) {
+      return;
+    }
+    isOpen = false;
+    select.classList.remove("is-open");
+    select.classList.add("is-closing");
+    menu.classList.add("closing");
+    trigger.setAttribute("aria-expanded", "false");
+    window.removeEventListener("mousedown", handleOutsideClick);
+    window.removeEventListener("keydown", handleEscape);
+    window.setTimeout(() => {
+      select.classList.remove("is-closing");
+      menu.classList.remove("closing");
+    }, 140);
+  };
+
+  function handleOutsideClick(event) {
+    if (!select.contains(event.target)) {
+      closeMenu();
+    }
+  }
+
+  function handleEscape(event) {
+    if (event.key === "Escape") {
+      closeMenu();
+    }
+  }
+
+  const openMenu = () => {
+    if (disabled) {
+      return;
+    }
+    if (isOpen) {
+      closeMenu();
+      return;
+    }
+    isOpen = true;
+    select.classList.remove("is-closing");
+    menu.classList.remove("closing");
+    select.classList.add("is-open");
+    trigger.setAttribute("aria-expanded", "true");
+    window.addEventListener("mousedown", handleOutsideClick);
+    window.addEventListener("keydown", handleEscape);
+  };
+
+  options.forEach((optionData) => {
+    const option = document.createElement("button");
+    option.className = optionData.value === currentValue ? "filter-option active" : "filter-option";
+    option.type = "button";
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", optionData.value === currentValue ? "true" : "false");
+    option.textContent = optionData.label;
+    option.addEventListener("click", () => {
+      triggerValue.textContent = optionData.label;
+      Array.from(menu.children).forEach((child) => {
+        const isActive = child === option;
+        child.classList.toggle("active", isActive);
+        child.setAttribute("aria-selected", isActive ? "true" : "false");
+      });
+      closeMenu();
+      onChange(optionData.value);
+    });
+    menu.appendChild(option);
+  });
+
+  trigger.addEventListener("click", openMenu);
+  select.append(trigger, menu);
+  return select;
+}
+
+/**
+ * Sorts items by display name with stable tie-breaking.
+ *
+ * @param {Array<object>} items - Items to sort.
+ * @param {"asc"|"desc"} direction - Sort direction.
+ * @returns {Array<object>} Sorted copy.
+ */
+function sortItemsByName(items, direction) {
+  const multiplier = direction === "desc" ? -1 : 1;
+  return [...items].sort((left, right) => {
+    const byName = String(left.name || "").localeCompare(String(right.name || ""), undefined, { sensitivity: "base" });
+    if (byName !== 0) {
+      return byName * multiplier;
+    }
+    return String(left.id || "").localeCompare(String(right.id || "")) * multiplier;
+  });
+}
+
+/**
+ * Builds the empty panel for searches with no matching profile items.
+ *
+ * @returns {HTMLDivElement} Empty match panel.
+ */
+function createNoMatchesPanel() {
+  const panel = document.createElement("div");
+  panel.className = "empty-panel";
+  panel.textContent = "No matching items.";
+  return panel;
+}
+
+/**
  * Builds the empty-state UI for a tab with a search shortcut.
  *
  * @param {{label:string, projectType:string}} definition - Tab descriptor.
  * @returns {HTMLDivElement} Empty state element.
  */
-function createEmptyState(definition) {
+function createEmptyState(definition, profileId) {
   const empty = document.createElement("div");
   empty.className = "empty-state";
 
@@ -1420,12 +1779,43 @@ function createEmptyState(definition) {
           query: "",
           projectType: definition.projectType,
           sourceTab: definition.key,
+          profileId,
         },
       })
     );
   });
 
   empty.append(icon, title, text, button);
+  return empty;
+}
+
+/**
+ * Builds the empty state for Favorites without a misleading add shortcut.
+ *
+ * @param {{key:string}} definition - Tab descriptor.
+ * @returns {HTMLDivElement} Empty favorites state.
+ */
+function createFavoritesEmptyState(definition) {
+  const empty = document.createElement("div");
+  empty.className = "empty-state";
+
+  const icon = document.createElement("div");
+  icon.className = "empty-state-icon";
+  icon.appendChild(createStateLogoImage());
+
+  const title = document.createElement("div");
+  title.className = "empty-state-title";
+  title.textContent = definition.key === "mods"
+    ? "No favorite mods yet"
+    : definition.key === "resourcepacks"
+      ? "No favorite resource packs yet"
+      : "No favorite shaders yet";
+
+  const text = document.createElement("div");
+  text.className = "empty-state-text";
+  text.textContent = "Use the star button on items in a normal profile to add them here.";
+
+  empty.append(icon, title, text);
   return empty;
 }
 
@@ -2184,6 +2574,24 @@ async function beginDownloadFlow(profileId, tab) {
   }
 
   await downloadCategoryAsZip(getTabItems(profile, tab), resolveZipFolderName(tab), profile.name, preparedDownload);
+}
+
+/**
+ * Starts a ZIP download for virtual profiles such as Favorites.
+ *
+ * @param {object} profile - Virtual profile snapshot.
+ * @param {"mods"|"resourcepacks"|"shaders"} tab - Active tab key.
+ */
+async function beginVirtualDownloadFlow(profile, tab) {
+  const suggestedName = `${sanitizeFileName(profile?.name || "favorites")}-${resolveZipFolderName(tab)}.zip`;
+  const preparedDownload = typeof prepareDownloadWithPreferences === "function"
+    ? await prepareDownloadWithPreferences(suggestedName)
+    : null;
+  if (preparedDownload?.mode === "cancelled") {
+    return;
+  }
+
+  await downloadCategoryAsZip(getVisibleTabItems(getTabItems(profile, tab), tab), resolveZipFolderName(tab), profile?.name || "Favorites", preparedDownload);
 }
 
 /**
@@ -3806,8 +4214,59 @@ function createTextField(labelText) {
   label.textContent = labelText;
   const input = document.createElement("input");
   input.type = "text";
+  input.maxLength = resolveTextFieldMaxLength(labelText);
   group.append(label, input);
+  attachCharacterCounter(group, input);
   return { group, input };
+}
+
+/**
+ * Adds a small live character counter to a text field.
+ *
+ * @param {HTMLElement} group - Field group.
+ * @param {HTMLInputElement|HTMLTextAreaElement} input - Input element.
+ */
+function attachCharacterCounter(group, input) {
+  if (!input.maxLength || input.maxLength < 0) {
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.className = input.tagName === "TEXTAREA" ? "field-counter-wrap field-counter-wrap-textarea" : "field-counter-wrap";
+  const counter = document.createElement("span");
+  counter.className = "field-counter";
+  const update = () => {
+    counter.textContent = `${input.value.length}/${input.maxLength}`;
+  };
+  input.replaceWith(wrapper);
+  wrapper.append(input, counter);
+  input.addEventListener("input", update);
+  update();
+}
+
+/**
+ * Chooses field-specific text limits that match expected content.
+ *
+ * @param {string} labelText - Visible field label.
+ * @returns {number} Maximum character count.
+ */
+function resolveTextFieldMaxLength(labelText) {
+  const normalized = String(labelText || "").toLowerCase();
+  if (normalized.includes("minecraft version")) {
+    return 16;
+  }
+  if (normalized.includes("version")) {
+    return 48;
+  }
+  if (normalized.includes("author")) {
+    return 48;
+  }
+  if (normalized.includes("url")) {
+    return 2048;
+  }
+  if (normalized.includes("name")) {
+    return 80;
+  }
+  return 120;
 }
 
 /**
