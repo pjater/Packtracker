@@ -13,6 +13,9 @@ const {
   addMod,
   addResourcePack,
   addShader,
+  removeMod,
+  removeResourcePack,
+  removeShader,
   getDependencies,
   getGameVersions,
   getProjectVersions,
@@ -39,6 +42,10 @@ let cachedGameVersions = [""];
 let lastExecutedSearchKey = "";
 let inflightSearchKey = "";
 let searchRequestSerial = 0;
+const browseMultiSelectState = {
+  enabled: false,
+  targetProfileId: "",
+};
 
 function translate(key, fallback) {
   return typeof namespace.t === "function" ? namespace.t(key, fallback) : fallback;
@@ -60,6 +67,20 @@ function requestBrowseSearch() {
     { notify: false }
   );
   void executeSearch(false);
+}
+
+/**
+ * Locks browse add actions to the profile that opened browse.
+ *
+ * @param {string} profileId - Target profile id.
+ */
+function setBrowseTargetProfile(profileId) {
+  const profiles = AppState.data?.profiles || [];
+  const safeId = String(profileId || "").trim();
+  const fallbackId = AppState.activeProfileId && profiles.some((profile) => profile.id === AppState.activeProfileId)
+    ? AppState.activeProfileId
+    : profiles[0]?.id || "";
+  browseMultiSelectState.targetProfileId = profiles.some((profile) => profile.id === safeId) ? safeId : fallbackId;
 }
 
 /**
@@ -112,6 +133,7 @@ function renderSearchPage() {
   searchInput.id = SEARCH_INPUT_ID;
   searchInput.className = AppState.search.loading ? "search-input loading" : "search-input";
   searchInput.type = "search";
+  searchInput.maxLength = 120;
   searchInput.placeholder = translate("searchPlaceholder", "Search mods, resource packs, and shaders...");
   searchInput.value = AppState.search.query;
   searchInput.addEventListener("input", () => {
@@ -148,7 +170,10 @@ function renderSearchPage() {
   searchWrap.appendChild(searchInput);
   const controlsRow = document.createElement("div");
   controlsRow.className = "search-controls-row";
-  controlsRow.append(renderFilterRow(), createViewToggle("browse"));
+  const controlActions = document.createElement("div");
+  controlActions.className = "search-control-actions";
+  controlActions.append(createBrowseActionControls(), createViewToggle("browse"));
+  controlsRow.append(renderFilterRow(), controlActions);
   header.append(searchWrap, controlsRow);
   page.appendChild(header);
 
@@ -323,7 +348,27 @@ function updateTabIndicator(tabBarElement) {
  */
 function renderSearchCard(project) {
   const card = document.createElement("div");
-  card.className = "search-card";
+  const activeMultiProfile = resolveBrowseMultiSelectProfile();
+  const isMultiSelect = browseMultiSelectState.enabled;
+  const isTracked = Boolean(isMultiSelect && activeMultiProfile && isProjectTrackedInProfile(project, activeMultiProfile));
+  card.className = isMultiSelect ? "search-card is-multiselect" : "search-card";
+  if (isTracked) {
+    card.classList.add("is-selected");
+  }
+
+  if (isMultiSelect) {
+    const indicator = document.createElement("button");
+    indicator.className = isTracked ? "multi-select-check active" : "multi-select-check";
+    indicator.type = "button";
+    indicator.setAttribute("aria-label", isTracked ? "Already added to selected profile" : "Add to selected profile");
+    indicator.textContent = isTracked ? "\u2713" : "";
+    indicator.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void handleBrowseMultiSelectAdd(project);
+    });
+    card.appendChild(indicator);
+  }
+
   card.appendChild(createSearchIcon(project.title || project.name, project.icon_url));
 
   const info = document.createElement("div");
@@ -374,15 +419,15 @@ function renderSearchCard(project) {
   addButton.addEventListener("click", () => {
     const profiles = AppState.data?.profiles || [];
     if (profiles.length === 0) {
+      showNoProfilesToast();
       return;
     }
-    if (profiles.length === 1) {
-      void showVersionPickerModal(project, profiles[0].id);
+    const targetProfile = resolveBrowseTargetProfile();
+    if (!targetProfile) {
+      showNoProfilesToast();
       return;
     }
-
-    const rect = addButton.getBoundingClientRect();
-    showProfilePicker(project, rect.left, rect.bottom + 4);
+    void showVersionPickerModal(project, targetProfile.id);
   });
 
   const projectType = project.project_type || AppState.search.projectType || "mod";
@@ -402,7 +447,17 @@ function renderSearchCard(project) {
 
   const actions = document.createElement("div");
   actions.className = "search-card-actions";
-  actions.append(sourceLinkButton, addButton);
+  if (isMultiSelect) {
+    actions.append(sourceLinkButton);
+    card.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("button, a")) {
+        return;
+      }
+      void handleBrowseMultiSelectAdd(project);
+    });
+  } else {
+    actions.append(sourceLinkButton, addButton);
+  }
   aside.appendChild(actions);
   card.appendChild(aside);
   return card;
@@ -413,8 +468,9 @@ function renderSearchCard(project) {
  *
  * @param {object} project - Search result project.
  * @param {string} profileId - Target profile id.
+ * @param {{returnHome?:boolean, closeOverlays?:boolean}} [options] - Add-flow behavior.
  */
-async function showVersionPickerModal(project, profileId) {
+async function showVersionPickerModal(project, profileId, options = {}) {
   if (typeof openVersionPickerModal !== "function") {
     return;
   }
@@ -426,6 +482,8 @@ async function showVersionPickerModal(project, profileId) {
     async (selectedVersion) => {
       await resolveAndAddMod(project, selectedVersion, profileId, {
         projectType: project.project_type || AppState.search.projectType,
+        returnHome: options.returnHome,
+        closeOverlays: options.closeOverlays,
       });
     },
     {
@@ -530,7 +588,7 @@ async function resolveAndAddMod(project, version, profileId, options = {}) {
       }
       return;
     }
-    showDependencySelectionModal(project, version, profileId, missingDependencies);
+    showDependencySelectionModal(project, version, profileId, missingDependencies, options);
     return;
   }
 
@@ -872,6 +930,44 @@ async function hydrateGameVersions() {
 }
 
 /**
+ * Builds browse-page controls that are not API filters.
+ *
+ * @returns {HTMLDivElement} Browse action controls.
+ */
+function createBrowseActionControls() {
+  const profiles = AppState.data?.profiles || [];
+  if (browseMultiSelectState.targetProfileId && !profiles.some((profile) => profile.id === browseMultiSelectState.targetProfileId)) {
+    browseMultiSelectState.targetProfileId = "";
+    browseMultiSelectState.enabled = false;
+  }
+  const targetProfile = resolveBrowseTargetProfile();
+
+  const group = document.createElement("div");
+  group.className = "browse-actions";
+
+  if (targetProfile) {
+    const targetLabel = document.createElement("div");
+    targetLabel.className = "browse-target-profile";
+    targetLabel.textContent = `Adding to ${targetProfile.name}`;
+    group.appendChild(targetLabel);
+  }
+
+  const toggle = createButton(browseMultiSelectState.enabled ? "Multiselect on" : "Multiselect");
+  toggle.classList.toggle("btn-primary", browseMultiSelectState.enabled);
+  toggle.addEventListener("click", () => {
+    if (profiles.length === 0) {
+      showNoProfilesToast();
+      return;
+    }
+    browseMultiSelectState.enabled = !browseMultiSelectState.enabled;
+    renderSearchPage();
+  });
+  group.appendChild(toggle);
+
+  return group;
+}
+
+/**
  * Shows a small profile chooser menu anchored below an add button.
  *
  * @param {object} project - Search hit to add.
@@ -932,7 +1028,7 @@ function showProfilePicker(project, x, y) {
  * @param {string} profileId - Profile identifier.
  * @param {Array<object>} dependencies - Missing dependency candidates.
  */
-function showDependencySelectionModal(project, version, profileId, dependencies) {
+function showDependencySelectionModal(project, version, profileId, dependencies, options = {}) {
   const overlay = createModalOverlay();
   const modal = createModalCard();
   modal.classList.add("modal-wide");
@@ -1002,8 +1098,12 @@ function showDependencySelectionModal(project, version, profileId, dependencies)
     const savedItem = addMod(profileId, mapProjectVersionToMod(project, version, dependencyIds, "modrinth", dependencyProjects));
     showItemCompatibilityWarnings(savedItem, profileId);
     setActiveProfile(profileId);
-    setActiveView("home");
-    closeSearchOverlays();
+    if (options.returnHome !== false) {
+      setActiveView("home");
+    }
+    if (options.closeOverlays !== false) {
+      closeSearchOverlays();
+    }
   });
 
   actions.append(cancelButton, confirmButton);
@@ -1763,8 +1863,126 @@ function formatVersionList(versions) {
  * @returns {string} Add button label.
  */
 function resolveAddButtonLabel() {
+  return "+ Add to profile";
+}
+
+/**
+ * Returns the currently selected profile for browse multiselect.
+ *
+ * @returns {object|null} Selected profile.
+ */
+function resolveBrowseMultiSelectProfile() {
+  return resolveBrowseTargetProfile();
+}
+
+/**
+ * Returns the profile locked to the current browse session.
+ *
+ * @returns {object|null} Target profile.
+ */
+function resolveBrowseTargetProfile() {
   const profiles = AppState.data?.profiles || [];
-  return profiles.length > 1 ? "+ Add to profile ▾" : "+ Add to profile";
+  if (profiles.length === 0) {
+    return null;
+  }
+  if (!browseMultiSelectState.targetProfileId) {
+    setBrowseTargetProfile(AppState.activeProfileId || "");
+  }
+  return profiles.find((profile) => profile.id === browseMultiSelectState.targetProfileId) || profiles[0];
+}
+
+/**
+ * Adds a browse result to the selected multiselect profile without leaving browse.
+ *
+ * @param {object} project - Browse result.
+ */
+async function handleBrowseMultiSelectAdd(project) {
+  const profile = resolveBrowseMultiSelectProfile();
+  if (!profile) {
+    showNoProfilesToast();
+    return;
+  }
+  const trackedItem = findTrackedProjectInProfile(project, profile);
+  if (trackedItem) {
+    removeTrackedBrowseProject(project, profile.id, trackedItem.id);
+    if (typeof namespace.showToast === "function") {
+      namespace.showToast("Removed from selected profile.", "success");
+    }
+    renderSearchPage();
+    return;
+  }
+  await showVersionPickerModal(project, profile.id, {
+    returnHome: false,
+    closeOverlays: true,
+  });
+}
+
+/**
+ * Returns true when a browse result already exists in the target profile.
+ *
+ * @param {object} project - Browse result.
+ * @param {object} profile - Target profile.
+ * @returns {boolean} Tracked flag.
+ */
+function isProjectTrackedInProfile(project, profile) {
+  return Boolean(findTrackedProjectInProfile(project, profile));
+}
+
+/**
+ * Finds an existing tracked item for one browse project in a profile.
+ *
+ * @param {object} project - Browse result.
+ * @param {object} profile - Target profile.
+ * @returns {object|null} Existing item.
+ */
+function findTrackedProjectInProfile(project, profile) {
+  const projectType = project.project_type || AppState.search.projectType || "mod";
+  const collection = projectType === "resourcepack"
+    ? profile.resourcePacks
+    : projectType === "shader"
+      ? profile.shaders
+      : profile.mods;
+  const projectId = String(project.project_id || project.id || "").trim().toLowerCase();
+  const slug = String(project.slug || "").trim().toLowerCase();
+  const name = String(project.title || project.name || "").trim().toLowerCase();
+
+  return (Array.isArray(collection) ? collection : []).find((entry) => {
+    const entryId = String(entry.projectId || entry.id || "").trim().toLowerCase();
+    const entrySlug = String(entry.slug || "").trim().toLowerCase();
+    const entryName = String(entry.name || "").trim().toLowerCase();
+    return (projectId && entryId === projectId)
+      || (slug && entrySlug === slug)
+      || (name && entryName === name);
+  }) || null;
+}
+
+/**
+ * Removes an item through the correct storage helper for the active browse type.
+ *
+ * @param {object} project - Browse result.
+ * @param {string} profileId - Target profile id.
+ * @param {string} itemId - Stored item id.
+ */
+function removeTrackedBrowseProject(project, profileId, itemId) {
+  const projectType = project.project_type || AppState.search.projectType || "mod";
+  if (projectType === "resourcepack") {
+    removeResourcePack(profileId, itemId);
+    return;
+  }
+  if (projectType === "shader") {
+    removeShader(profileId, itemId);
+    return;
+  }
+  removeMod(profileId, itemId);
+}
+
+/**
+ * Shows the no-profile warning requested for add actions.
+ */
+function showNoProfilesToast() {
+  if (typeof namespace.showToast === "function") {
+    namespace.showToast("Create a profile first.", "danger");
+  }
 }
 
 /**
@@ -1956,6 +2174,7 @@ Object.assign(namespace, {
   resolveAndAddMod,
   focusSearchInput,
   requestBrowseSearch,
+  setBrowseTargetProfile,
 });
 })();
 
