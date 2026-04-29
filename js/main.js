@@ -90,6 +90,7 @@
       visual: "Visual",
       advanced: "Advanced",
       updates: "Updates",
+      extra: "Extra",
       about: "About",
       onboarding: "Welcome to PackTracker",
       onboardingBody: "PackTracker helps you organize Minecraft mods, resource packs, and shaders per profile.",
@@ -149,9 +150,9 @@
       switchToProviderExperimental: "Switch to {source}",
       saveDirectlyToDefaultFolder: "Save directly to default folder",
       resetAllSettings: "Reset all settings",
-      resetSettingsHelp: "This resets language, theme, update prompts, onboarding state, and download preferences.",
+      resetSettingsHelp: "This resets language, theme, update prompts, and download preferences.",
       resetSettingsConfirmTitle: "Reset all settings?",
-      resetSettingsConfirmBody: "This will reset language, theme, onboarding, update prompts, and default download behavior.",
+      resetSettingsConfirmBody: "This will reset language, theme, update prompts, and default download behavior. The first-run tutorial will stay completed.",
       startupBootScreen: "Startup boot screen",
       startupBootScreenHelp: "Shows a short PackTracker splash screen when the app opens.",
       enabled: "Enabled",
@@ -397,6 +398,17 @@
   let bootScreenStartedAt = 0;
   let bootScreenDismissed = false;
   const BOOT_SCREEN_MIN_MS = 1000;
+  const VISUAL_SETTINGS_KEYS = [
+    "theme",
+    "accentColor",
+    "blurStrength",
+    "reduceMotion",
+    "showBootScreen",
+    "fontStyle",
+    "highContrast",
+    "roundedCorners",
+  ];
+  const ACCENT_COLOR_PRESETS = ["#1ad969", "#38bdf8", "#f59e47", "#ff4a6e", "#a78bfa", "#f2f2f2"];
 
   document.addEventListener("DOMContentLoaded", () => {
     bootScreenStartedAt = performance.now();
@@ -585,6 +597,9 @@
       if (detail.searchSource && typeof setSearchSource === "function") {
         setSearchSource(detail.searchSource);
       }
+      if (typeof window.PackTracker.setBrowseTargetProfile === "function") {
+        window.PackTracker.setBrowseTargetProfile(detail.profileId || AppState.activeProfileId || "");
+      }
       setBrowseContext(defaultTab);
       setSearchState(
         {
@@ -718,7 +733,7 @@
           : settings.fontStyle === "serif"
             ? "'Merriweather', Georgia, serif"
             : "'Nunito', sans-serif");
-    const roundedCorners = Math.max(0, Number(settings.roundedCorners || 12));
+    const roundedCorners = Math.max(0, Number(settings.roundedCorners ?? 12));
     root.style.setProperty("--radius-control", `${Math.max(0, roundedCorners - 4)}px`);
     root.style.setProperty("--radius-card", `${roundedCorners}px`);
     root.style.setProperty("--radius-panel", `${roundedCorners + 2}px`);
@@ -999,7 +1014,7 @@
   /**
    * Opens the full-screen app settings modal.
    *
-   * @param {"general"|"visual"|"advanced"|"updates"|"about"} initialTab - First visible settings tab.
+   * @param {"general"|"visual"|"advanced"|"updates"|"extra"|"about"} initialTab - First visible settings tab.
    */
   function showSettingsModal(initialTab = "general") {
     const modalRoot = document.getElementById(MODAL_ROOT_ID);
@@ -1007,7 +1022,7 @@
       return;
     }
 
-    const activeTab = ["general", "visual", "advanced", "updates", "about"].includes(initialTab) ? initialTab : "general";
+    const activeTab = ["general", "visual", "advanced", "updates", "extra", "about"].includes(initialTab) ? initialTab : "general";
     const settings = AppState.settings || {};
     if (!visualSettingsDraft) {
       visualSettingsDraft = createVisualSettingsDraft(settings);
@@ -1090,6 +1105,7 @@
       { key: "visual", label: t("visual", "Visual") },
       { key: "advanced", label: t("advanced", "Advanced") },
       { key: "updates", label: t("updates", "Updates") },
+      { key: "extra", label: t("extra", "Extra") },
       { key: "about", label: t("about", "About") },
     ].forEach((entry) => {
       const button = document.createElement("button");
@@ -1111,7 +1127,9 @@
             ? renderAdvancedSettingsPanel(settings)
           : activeTab === "updates"
             ? renderUpdatesSettingsPanel()
-            : renderAboutSettingsPanel()
+            : activeTab === "extra"
+              ? renderExtraSettingsPanel()
+              : renderAboutSettingsPanel()
     );
 
     if (closeButton) {
@@ -1149,7 +1167,7 @@
     const resetGroup = createSettingsField(t("resetAllSettings", "Reset all settings"));
     const resetHelp = document.createElement("div");
     resetHelp.className = "settings-field-help";
-    resetHelp.textContent = t("resetSettingsHelp", "This resets language, theme, update prompts, onboarding state, and download preferences.");
+    resetHelp.textContent = t("resetSettingsHelp", "This resets language, theme, update prompts, and download preferences.");
     const resetButton = createSettingsActionButton(t("resetAllSettings", "Reset all settings"), "btn-danger");
     resetButton.addEventListener("click", () => {
       showResetSettingsConfirmModal();
@@ -1247,7 +1265,7 @@
     intro.textContent = t("visualSettingsIntro", "Adjust theme, accent color, motion, blur, and other appearance settings for PackTracker.");
     panel.appendChild(intro);
 
-    const themeGroup = createSettingsField(t("themeExperimental", "Theme"), { experimental: true });
+    const themeGroup = createSettingsField(t("themeExperimental", "Theme"));
     const themeHelp = document.createElement("div");
     themeHelp.className = "settings-field-help";
     themeHelp.textContent = t("themeDescription", "Choose whether the app follows a light, dark, or system appearance.");
@@ -1257,33 +1275,7 @@
     themeGroup.append(themeSelect, themeHelp);
 
     const accentGroup = createSettingsField(t("accentColor", "Accent color"), { experimental: true });
-    const accentRow = document.createElement("div");
-    accentRow.className = "settings-visual-row";
-    const accentPicker = document.createElement("label");
-    accentPicker.className = "settings-color-picker";
-    const accentPreview = document.createElement("span");
-    accentPreview.className = "settings-color-preview";
-    accentPreview.style.background = settings.accentColor || "#1ad969";
-    const accentInput = document.createElement("input");
-    accentInput.type = "color";
-    accentInput.className = "settings-color-input";
-    accentInput.value = settings.accentColor || "#1ad969";
-    accentInput.addEventListener("input", () => {
-      updateVisualSettingsDraft({ accentColor: accentInput.value });
-      accentPreview.style.background = accentInput.value || "#1ad969";
-    });
-    const accentValue = document.createElement("div");
-    accentValue.className = "settings-field-help settings-inline-value";
-    accentValue.textContent = String(settings.accentColor || "#1ad969").toUpperCase();
-    accentInput.addEventListener("input", () => {
-      accentValue.textContent = String(accentInput.value || "#1ad969").toUpperCase();
-    });
-    const accentPickerLabel = document.createElement("span");
-    accentPickerLabel.className = "settings-color-picker-label";
-    accentPickerLabel.textContent = t("custom", "Custom");
-    accentPicker.append(accentPreview, accentPickerLabel, accentInput);
-    accentRow.append(accentPicker, accentValue);
-    accentGroup.appendChild(accentRow);
+    accentGroup.appendChild(createAccentColorPicker(settings.accentColor || "#1ad969"));
 
     const blurGroup = createSettingsField(t("blurEffects", "Blur effects"), { experimental: true });
     blurGroup.appendChild(createSettingsRangeControl({
@@ -1312,12 +1304,18 @@
       label: t("startupBootScreenHelp", "Shows a short PackTracker splash screen when the app opens."),
       toggleLabel: t("enabled", "Enabled"),
       onChange(value) {
+        updateVisualSettingsDraft({ showBootScreen: value });
         AppState.settings = typeof updateAppSettings === "function"
           ? updateAppSettings({ showBootScreen: value })
           : {
               ...(AppState.settings || {}),
               showBootScreen: value,
             };
+        if (value) {
+          delete document.documentElement.dataset.bootScreen;
+        } else {
+          document.documentElement.dataset.bootScreen = "off";
+        }
       },
     }));
 
@@ -1351,12 +1349,18 @@
 
     const saveRow = document.createElement("div");
     saveRow.className = "settings-save-row";
+    const saveStatus = document.createElement("div");
+    saveStatus.className = isVisualSettingsDirty() ? "settings-save-status is-dirty" : "settings-save-status";
+    saveStatus.dataset.visualSaveStatus = "true";
+    saveStatus.textContent = isVisualSettingsDirty() ? "Unsaved changes" : "All changes saved";
     const resetButton = createSettingsActionButton(t("resetToDefault", "Reset to default"));
     resetButton.addEventListener("click", () => {
       visualSettingsDraft = createDefaultVisualSettingsDraft();
       showSettingsModal("visual");
     });
     const saveButton = createSettingsActionButton(t("saveVisualSettings", "Save visual settings"), "btn-primary");
+    saveButton.dataset.visualSaveButton = "true";
+    saveButton.disabled = !isVisualSettingsDirty();
     saveButton.addEventListener("click", () => {
       AppState.settings = typeof updateAppSettings === "function"
         ? updateAppSettings(visualSettingsDraft || settings)
@@ -1367,7 +1371,7 @@
       visualSettingsDraft = createVisualSettingsDraft(AppState.settings || {});
       showSettingsModal("visual");
     });
-    saveRow.append(resetButton, saveButton);
+    saveRow.append(saveStatus, resetButton, saveButton);
 
     panel.append(themeGroup, accentGroup, blurGroup, motionGroup, bootGroup, fontGroup, contrastGroup, cornersGroup, saveRow);
     return panel;
@@ -1383,11 +1387,12 @@
     return {
       theme: settings.theme || "dark",
       accentColor: settings.accentColor || "#1ad969",
-      blurStrength: Number(settings.blurStrength || 8),
+      blurStrength: Number(settings.blurStrength ?? 8),
       reduceMotion: Boolean(settings.reduceMotion),
+      showBootScreen: settings.showBootScreen !== false,
       fontStyle: settings.fontStyle || "default",
       highContrast: Boolean(settings.highContrast),
-      roundedCorners: Number(settings.roundedCorners || 12),
+      roundedCorners: Number(settings.roundedCorners ?? 12),
     };
   }
 
@@ -1402,6 +1407,7 @@
       accentColor: "#1ad969",
       blurStrength: 8,
       reduceMotion: false,
+      showBootScreen: true,
       fontStyle: "default",
       highContrast: false,
       roundedCorners: 12,
@@ -1418,6 +1424,295 @@
       ...(visualSettingsDraft || createVisualSettingsDraft(AppState.settings || {})),
       ...patch,
     };
+    syncVisualSaveIndicator();
+  }
+
+  /**
+   * Returns true when the visual settings draft differs from saved settings.
+   *
+   * @returns {boolean} Dirty state.
+   */
+  function isVisualSettingsDirty() {
+    const draft = visualSettingsDraft || createVisualSettingsDraft(AppState.settings || {});
+    const saved = createVisualSettingsDraft(AppState.settings || {});
+    return VISUAL_SETTINGS_KEYS.some((key) => draft[key] !== saved[key]);
+  }
+
+  /**
+   * Updates the visual settings save-state indicator without rebuilding the modal.
+   */
+  function syncVisualSaveIndicator() {
+    const dirty = isVisualSettingsDirty();
+    const status = document.querySelector("[data-visual-save-status='true']");
+    if (status instanceof HTMLElement) {
+      status.classList.toggle("is-dirty", dirty);
+      status.textContent = dirty ? "Unsaved changes" : "All changes saved";
+    }
+    const saveButton = document.querySelector("[data-visual-save-button='true']");
+    if (saveButton instanceof HTMLButtonElement) {
+      saveButton.disabled = !dirty;
+    }
+  }
+
+  /**
+   * Builds a custom accent color picker that avoids the browser-native color popup.
+   *
+   * @param {string} currentColor - Current hex color.
+   * @returns {HTMLDivElement} Picker wrapper.
+   */
+  function createAccentColorPicker(currentColor) {
+    let selectedColor = normalizeDraftAccentColor(currentColor);
+    const wrapper = document.createElement("div");
+    wrapper.className = "settings-color-control";
+
+    const trigger = document.createElement("button");
+    trigger.className = "settings-color-picker";
+    trigger.type = "button";
+    trigger.setAttribute("aria-haspopup", "dialog");
+    trigger.setAttribute("aria-expanded", "false");
+
+    const preview = document.createElement("span");
+    preview.className = "settings-color-preview";
+    preview.style.background = selectedColor;
+    const label = document.createElement("span");
+    label.className = "settings-color-picker-label";
+    label.textContent = t("custom", "Custom");
+    const value = document.createElement("span");
+    value.className = "settings-color-value";
+    value.textContent = selectedColor.toUpperCase();
+    trigger.append(preview, label, value);
+
+    const popover = document.createElement("div");
+    popover.className = "settings-color-popover";
+
+    let hsv = hexToHsv(selectedColor);
+    const spectrum = document.createElement("div");
+    spectrum.className = "settings-color-spectrum";
+    spectrum.style.setProperty("--spectrum-hue", String(hsv.h));
+    const spectrumHandle = document.createElement("span");
+    spectrumHandle.className = "settings-color-spectrum-handle";
+    spectrum.appendChild(spectrumHandle);
+
+    const hueInput = document.createElement("input");
+    hueInput.type = "range";
+    hueInput.className = "settings-color-hue";
+    hueInput.min = "0";
+    hueInput.max = "360";
+    hueInput.step = "1";
+    hueInput.value = String(hsv.h);
+
+    function updateSpectrumHandle() {
+      spectrumHandle.style.left = `${Math.round(hsv.s * 100)}%`;
+      spectrumHandle.style.top = `${Math.round((1 - hsv.v) * 100)}%`;
+    }
+    updateSpectrumHandle();
+
+    const swatches = document.createElement("div");
+    swatches.className = "settings-color-swatches";
+    ACCENT_COLOR_PRESETS.forEach((color) => {
+      const swatch = document.createElement("button");
+      swatch.className = color.toLowerCase() === selectedColor ? "settings-color-swatch active" : "settings-color-swatch";
+      swatch.type = "button";
+      swatch.style.background = color;
+      swatch.setAttribute("aria-label", color);
+      swatch.addEventListener("click", () => {
+        applyColor(color);
+      });
+      swatches.appendChild(swatch);
+    });
+
+    const hexInput = document.createElement("input");
+    hexInput.type = "text";
+    hexInput.className = "settings-color-hex";
+    hexInput.maxLength = 7;
+    hexInput.value = selectedColor.toUpperCase();
+    hexInput.placeholder = "#1AD969";
+    hexInput.addEventListener("input", () => {
+      const normalized = normalizeDraftAccentColor(hexInput.value);
+      if (normalized) {
+        applyColor(normalized, { syncInput: false });
+      }
+    });
+    const hexWrap = document.createElement("div");
+    hexWrap.className = "field-counter-wrap";
+    const hexCounter = document.createElement("span");
+    hexCounter.className = "field-counter";
+    const updateHexCounter = () => {
+      hexCounter.textContent = `${hexInput.value.length}/${hexInput.maxLength}`;
+    };
+    hexInput.addEventListener("input", updateHexCounter);
+    hexWrap.append(hexInput, hexCounter);
+    updateHexCounter();
+
+    function updateFromSpectrum(event) {
+      const rect = spectrum.getBoundingClientRect();
+      const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+      hsv = {
+        ...hsv,
+        s: x,
+        v: 1 - y,
+      };
+      applyColor(hsvToHex(hsv));
+    }
+
+    spectrum.addEventListener("pointerdown", (event) => {
+      spectrum.setPointerCapture(event.pointerId);
+      updateFromSpectrum(event);
+    });
+    spectrum.addEventListener("pointermove", (event) => {
+      if (event.buttons === 1) {
+        updateFromSpectrum(event);
+      }
+    });
+    hueInput.addEventListener("input", () => {
+      hsv = {
+        ...hsv,
+        h: Number(hueInput.value || 0),
+      };
+      spectrum.style.setProperty("--spectrum-hue", String(hsv.h));
+      applyColor(hsvToHex(hsv));
+    });
+
+    popover.append(spectrum, hueInput, swatches, hexWrap);
+
+    function applyColor(color, options = {}) {
+      selectedColor = normalizeDraftAccentColor(color) || "#1ad969";
+      hsv = hexToHsv(selectedColor);
+      hueInput.value = String(hsv.h);
+      spectrum.style.setProperty("--spectrum-hue", String(hsv.h));
+      updateSpectrumHandle();
+      preview.style.background = selectedColor;
+      value.textContent = selectedColor.toUpperCase();
+      if (options.syncInput !== false) {
+        hexInput.value = selectedColor.toUpperCase();
+        updateHexCounter();
+      }
+      Array.from(swatches.children).forEach((child) => {
+        child.classList.toggle("active", child.getAttribute("aria-label")?.toLowerCase() === selectedColor);
+      });
+      updateVisualSettingsDraft({ accentColor: selectedColor });
+    }
+
+    function closePopover() {
+      wrapper.classList.remove("is-open");
+      trigger.setAttribute("aria-expanded", "false");
+      if (popover.parentElement === document.body) {
+        popover.remove();
+      }
+      window.removeEventListener("mousedown", handleOutsideClick);
+      window.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("resize", positionPopover);
+      window.removeEventListener("scroll", positionPopover, true);
+    }
+
+    function handleOutsideClick(event) {
+      if (!wrapper.contains(event.target) && !popover.contains(event.target)) {
+        closePopover();
+      }
+    }
+
+    function handleEscape(event) {
+      if (event.key === "Escape") {
+        closePopover();
+      }
+    }
+
+    function positionPopover() {
+      positionFloatingSettingsOverlay(trigger, popover, {
+        width: 310,
+      });
+    }
+
+    trigger.addEventListener("click", () => {
+      const isOpen = !wrapper.classList.contains("is-open");
+      wrapper.classList.toggle("is-open", isOpen);
+      trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      if (isOpen) {
+        document.body.appendChild(popover);
+        positionPopover();
+        window.addEventListener("mousedown", handleOutsideClick);
+        window.addEventListener("keydown", handleEscape);
+        window.addEventListener("resize", positionPopover);
+        window.addEventListener("scroll", positionPopover, true);
+        hexInput.focus();
+        hexInput.select();
+      } else {
+        closePopover();
+      }
+    });
+
+    wrapper.append(trigger);
+    return wrapper;
+  }
+
+  /**
+   * Normalizes draft accent colors.
+   *
+   * @param {string} value - Candidate color.
+   * @returns {string} Normalized hex or empty string.
+   */
+  function normalizeDraftAccentColor(value) {
+    const candidate = String(value || "").trim();
+    return /^#[0-9a-fA-F]{6}$/.test(candidate) ? candidate.toLowerCase() : "";
+  }
+
+  /**
+   * Converts a hex color to HSV.
+   *
+   * @param {string} hex - Hex color.
+   * @returns {{h:number,s:number,v:number}} HSV color.
+   */
+  function hexToHsv(hex) {
+    const normalized = normalizeDraftAccentColor(hex) || "#1ad969";
+    const r = parseInt(normalized.slice(1, 3), 16) / 255;
+    const g = parseInt(normalized.slice(3, 5), 16) / 255;
+    const b = parseInt(normalized.slice(5, 7), 16) / 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
+    let h = 0;
+    if (delta !== 0) {
+      if (max === r) {
+        h = 60 * (((g - b) / delta) % 6);
+      } else if (max === g) {
+        h = 60 * (((b - r) / delta) + 2);
+      } else {
+        h = 60 * (((r - g) / delta) + 4);
+      }
+    }
+    return {
+      h: Math.round(h < 0 ? h + 360 : h),
+      s: max === 0 ? 0 : delta / max,
+      v: max,
+    };
+  }
+
+  /**
+   * Converts HSV to a hex color.
+   *
+   * @param {{h:number,s:number,v:number}} hsv - HSV color.
+   * @returns {string} Hex color.
+   */
+  function hsvToHex(hsv) {
+    const h = ((Number(hsv.h) || 0) % 360 + 360) % 360;
+    const s = Math.min(1, Math.max(0, Number(hsv.s) || 0));
+    const v = Math.min(1, Math.max(0, Number(hsv.v) || 0));
+    const c = v * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = v - c;
+    const [r, g, b] = h < 60
+      ? [c, x, 0]
+      : h < 120
+        ? [x, c, 0]
+        : h < 180
+          ? [0, c, x]
+          : h < 240
+            ? [0, x, c]
+            : h < 300
+              ? [x, 0, c]
+              : [c, 0, x];
+    return `#${[r, g, b].map((part) => Math.round((part + m) * 255).toString(16).padStart(2, "0")).join("")}`;
   }
 
   /**
@@ -1693,6 +1988,38 @@
   }
 
   /**
+   * Renders extra external-source shortcuts.
+   *
+   * @returns {HTMLDivElement} Extra panel.
+   */
+  function renderExtraSettingsPanel() {
+    const panel = document.createElement("div");
+    panel.className = "settings-panel";
+
+    const card = document.createElement("div");
+    card.className = "settings-info-card";
+
+    const title = document.createElement("div");
+    title.className = "settings-card-title";
+    title.textContent = "Project sources";
+
+    const subtitle = document.createElement("div");
+    subtitle.className = "settings-field-help";
+    subtitle.textContent = "Open the main Minecraft project directories in a new tab.";
+
+    const actions = document.createElement("div");
+    actions.className = "settings-inline-actions";
+
+    const modrinthButton = createSettingsExternalLink("Modrinth", "https://modrinth.com/");
+    const curseForgeButton = createSettingsExternalLink("CurseForge", "https://www.curseforge.com/minecraft");
+
+    actions.append(modrinthButton, curseForgeButton);
+    card.append(title, subtitle, actions);
+    panel.appendChild(card);
+    return panel;
+  }
+
+  /**
    * Renders the about settings tab.
    *
    * @returns {HTMLDivElement} About panel.
@@ -1941,7 +2268,7 @@
     title.textContent = t("resetSettingsConfirmTitle", "Reset all settings?");
     const subtitle = document.createElement("div");
     subtitle.className = "modal-subtitle";
-    subtitle.textContent = t("resetSettingsConfirmBody", "This will reset language, theme, onboarding, update prompts, and default download behavior.");
+    subtitle.textContent = t("resetSettingsConfirmBody", "This will reset language, theme, update prompts, and default download behavior. The first-run tutorial will stay completed.");
     const actions = document.createElement("div");
     actions.className = "modal-actions";
     const cancelButton = document.createElement("button");
@@ -2055,6 +2382,8 @@
       select.classList.add("is-closing");
       menu.classList.add("closing");
       trigger.setAttribute("aria-expanded", "false");
+      window.removeEventListener("resize", positionMenu);
+      window.removeEventListener("scroll", positionMenu, true);
       if (handleOutsideClick) {
         window.removeEventListener("mousedown", handleOutsideClick);
         handleOutsideClick = null;
@@ -2066,7 +2395,16 @@
       window.setTimeout(() => {
         select.classList.remove("is-closing");
         menu.classList.remove("closing");
+        if (menu.parentElement === document.body) {
+          menu.remove();
+        }
       }, 140);
+    }
+
+    function positionMenu() {
+      positionFloatingSettingsOverlay(trigger, menu, {
+        matchAnchorWidth: true,
+      });
     }
 
     function openMenu() {
@@ -2080,8 +2418,10 @@
       menu.classList.remove("closing");
       select.classList.add("is-open");
       trigger.setAttribute("aria-expanded", "true");
+      document.body.appendChild(menu);
+      positionMenu();
       handleOutsideClick = (event) => {
-        if (!select.contains(event.target)) {
+        if (!select.contains(event.target) && !menu.contains(event.target)) {
           closeMenu();
         }
       };
@@ -2092,6 +2432,8 @@
       };
       window.addEventListener("mousedown", handleOutsideClick);
       window.addEventListener("keydown", handleEscape);
+      window.addEventListener("resize", positionMenu);
+      window.addEventListener("scroll", positionMenu, true);
     }
 
     options.forEach((optionData) => {
@@ -2103,6 +2445,11 @@
       option.textContent = resolveDropdownOptionLabel(optionData);
       option.addEventListener("click", () => {
         triggerValue.textContent = resolveDropdownOptionLabel(optionData);
+        Array.from(menu.children).forEach((child) => {
+          const isActive = child === option;
+          child.classList.toggle("active", isActive);
+          child.setAttribute("aria-selected", isActive ? "true" : "false");
+        });
         closeMenu();
         onChange(optionData.value);
       });
@@ -2110,8 +2457,44 @@
     });
 
     trigger.addEventListener("click", openMenu);
-    select.append(trigger, menu);
+    select.append(trigger);
     return select;
+  }
+
+  /**
+   * Positions a floating settings overlay outside scroll-clipped containers.
+   *
+   * @param {HTMLElement} anchor - Trigger element.
+   * @param {HTMLElement} overlay - Floating panel.
+   * @param {{matchAnchorWidth?: boolean, width?: number}} [options] - Position options.
+   */
+  function positionFloatingSettingsOverlay(anchor, overlay, options = {}) {
+    if (!(anchor instanceof HTMLElement) || !(overlay instanceof HTMLElement)) {
+      return;
+    }
+
+    overlay.classList.add("settings-floating-overlay");
+    const rect = anchor.getBoundingClientRect();
+    const desiredWidth = options.matchAnchorWidth
+      ? rect.width
+      : Math.min(options.width || rect.width, window.innerWidth - 24);
+    overlay.style.width = `${Math.max(140, desiredWidth)}px`;
+    overlay.style.minWidth = `${Math.max(140, rect.width)}px`;
+    overlay.style.maxWidth = `${Math.max(140, window.innerWidth - 24)}px`;
+
+    const overlayRect = overlay.getBoundingClientRect();
+    const safeLeft = Math.min(
+      Math.max(12, rect.left),
+      window.innerWidth - overlayRect.width - 12
+    );
+    const belowTop = rect.bottom + 8;
+    const aboveTop = rect.top - overlayRect.height - 8;
+    const safeTop = belowTop + overlayRect.height <= window.innerHeight - 12
+      ? belowTop
+      : Math.max(12, aboveTop);
+
+    overlay.style.left = `${safeLeft}px`;
+    overlay.style.top = `${safeTop}px`;
   }
 
   /**
@@ -2143,6 +2526,23 @@
     button.type = "button";
     button.textContent = text;
     return button;
+  }
+
+  /**
+   * Creates an external link styled as a settings action button.
+   *
+   * @param {string} text - Link label.
+   * @param {string} href - Destination URL.
+   * @returns {HTMLAnchorElement} Link button.
+   */
+  function createSettingsExternalLink(text, href) {
+    const link = document.createElement("a");
+    link.className = "btn btn-small";
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = `${text} ↗`;
+    return link;
   }
 
   /**
@@ -2203,7 +2603,7 @@
     });
 
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=20260424-3").then((registration) => {
+      navigator.serviceWorker.register("./sw.js?v=20260429-7").then((registration) => {
         registration.update().catch(() => {});
       }).catch((error) => {
         console.warn("PackTracker: service worker registration failed", error);
