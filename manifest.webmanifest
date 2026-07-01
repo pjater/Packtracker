@@ -1,0 +1,19 @@
+{
+  "name": "PackTracker",
+  "short_name": "PackTracker",
+  "description": "Track Minecraft mods, resource packs, and shaders in an installable PackTracker app window.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#15171c",
+  "theme_color": "#15171c",
+  "orientation": "landscape-primary",
+  "icons": [
+    {
+      "src": "./assets/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

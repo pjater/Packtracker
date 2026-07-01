@@ -1,0 +1,400 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/png" href="./assets/logo.png?v=20260420-1">
+  <link rel="apple-touch-icon" href="./assets/logo.png?v=20260420-1">
+  <link rel="manifest" href="./manifest.webmanifest?v=20260422-1">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#15171c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="PackTracker">
+  <meta name="packtracker-supabase-url" content="">
+  <meta name="packtracker-supabase-anon-key" content="">
+  <title>PackTracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <link rel="stylesheet" href="./css/style.css?v=20260701-1">
+</head>
+<body>
+  <script>
+    (function syncBootScreenPreference() {
+      try {
+        const raw = localStorage.getItem("packtracker_app_settings_v1");
+        if (!raw) {
+          return;
+        }
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.showBootScreen === false) {
+          document.documentElement.dataset.bootScreen = "off";
+        }
+      } catch (error) {
+        // Ignore unreadable boot-screen preference payloads.
+      }
+    })();
+  </script>
+
+  <div id="boot-screen" class="boot-screen" aria-hidden="true">
+    <div class="boot-screen-card">
+      <img class="boot-screen-logo" src="./assets/logo.png?v=20260420-1" alt="" draggable="false">
+      <div class="boot-screen-name">PACKTRACKER</div>
+      <div class="boot-screen-progress" role="presentation">
+        <div class="boot-screen-progress-fill"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="app" class="app-wrapper">
+    <header id="topbar">
+      <div class="topbar-inner">
+        <div class="brand-mark" aria-label="PackTracker">
+          <img class="brand-logo" src="./assets/logo.png?v=20260420-1" alt="" aria-hidden="true" draggable="false">
+          <span class="brand-name">PACKTRACKER</span>
+        </div>
+        <div class="topbar-actions">
+          <button id="install-app-button" class="btn hidden" type="button">⬇ Install app</button>
+          <button id="export-button" class="btn" type="button">⤓ Export backup</button>
+          <label class="btn" for="import-input">⤴ Import backup</label>
+          <input id="import-input" class="sr-only" type="file" accept="application/json,.json">
+          <button id="account-button" class="btn btn-icon-text account-button-disabled" type="button" disabled aria-disabled="true">👤 Account</button>
+          <button id="settings-button" class="btn btn-icon-text" type="button">⚙ Settings</button>
+        </div>
+      </div>
+    </header>
+
+    <aside id="sidebar">
+      <div class="sidebar-inner">
+        <div class="sidebar-section-label">Profiles</div>
+        <div id="profile-list" class="profile-list" aria-live="polite"></div>
+
+        <div class="sidebar-footer">
+          <button id="new-profile-button" class="btn btn-dashed" type="button">＋ New profile</button>
+        </div>
+      </div>
+    </aside>
+
+    <main id="main" class="main-content">
+      <section id="view-home" class="view" aria-label="Profile manager"></section>
+      <section id="view-search" class="view hidden" aria-label="Browse projects"></section>
+      <section id="view-share" class="view hidden" aria-label="Shared profile downloads"></section>
+    </main>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="context-menu-root"></div>
+  <div id="tooltip-root"></div>
+  <div id="toast-root"></div>
+
+  <script>
+    (function bootstrapPackTrackerState() {
+      const namespace = (window.PackTracker = window.PackTracker || {});
+      if (namespace.AppState && typeof namespace.setData === "function" && typeof namespace.subscribe === "function") {
+        return;
+      }
+
+      const VALID_TABS = ["mods", "resourcepacks", "shaders"];
+      const VALID_VIEWS = ["home", "search", "share"];
+      const VALID_VIEW_MODES = ["list", "grid"];
+      const VALID_BROWSE_TABS = ["mods", "resourcepacks", "shaders"];
+      const VALID_SEARCH_SOURCES = ["modrinth", "curseforge"];
+      const EMPTY_SEARCH_RESULTS = [];
+      const VIEW_MODE_STORAGE_KEY = "packtracker_view_modes_v1";
+      const FAVORITES_PROFILE_ID = "__favorites__";
+
+      function loadViewModes() {
+        const fallback = {
+          mods: "list",
+          resourcepacks: "list",
+          shaders: "list",
+          browse: "list",
+        };
+
+        try {
+          const raw = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+          if (!raw) {
+            return fallback;
+          }
+
+          const parsed = JSON.parse(raw);
+          return {
+            mods: VALID_VIEW_MODES.includes(parsed && parsed.mods) ? parsed.mods : fallback.mods,
+            resourcepacks: VALID_VIEW_MODES.includes(parsed && parsed.resourcepacks) ? parsed.resourcepacks : fallback.resourcepacks,
+            shaders: VALID_VIEW_MODES.includes(parsed && parsed.shaders) ? parsed.shaders : fallback.shaders,
+            browse: VALID_VIEW_MODES.includes(parsed && parsed.browse) ? parsed.browse : fallback.browse,
+          };
+        } catch (error) {
+          return fallback;
+        }
+      }
+
+      const AppState = namespace.AppState || {
+        activeProfileId: null,
+        activeTab: "mods",
+        activeView: "home",
+        searchSource: "modrinth",
+        search: {
+          query: "",
+          projectType: "mod",
+          loader: "",
+          gameVersion: "",
+          results: EMPTY_SEARCH_RESULTS,
+          loading: false,
+          offset: 0,
+          totalHits: 0,
+        },
+        browseContext: {
+          defaultTab: "mods",
+        },
+        data: null,
+        settings: null,
+        dirty: false,
+        viewModes: loadViewModes(),
+      };
+
+      const listeners = new Set();
+
+      function notifyStateChanged(reason = "update") {
+        listeners.forEach((listener) => {
+          listener({ reason });
+        });
+      }
+
+      function subscribe(listener) {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      }
+
+      function setData(data) {
+        AppState.data = data;
+        notifyStateChanged("data");
+      }
+
+      function setActiveProfile(id) {
+        if (id === null) {
+          if (AppState.activeProfileId === null) {
+            return false;
+          }
+          AppState.activeProfileId = null;
+          notifyStateChanged("active-profile");
+          return true;
+        }
+
+        if (id === FAVORITES_PROFILE_ID) {
+          if (AppState.activeProfileId === id) {
+            return false;
+          }
+          AppState.activeProfileId = id;
+          notifyStateChanged("active-profile");
+          return true;
+        }
+
+        const profiles = Array.isArray(AppState.data && AppState.data.profiles) ? AppState.data.profiles : [];
+        const exists = profiles.some((profile) => profile.id === id);
+        if (!exists || AppState.activeProfileId === id) {
+          return false;
+        }
+
+        AppState.activeProfileId = id;
+        notifyStateChanged("active-profile");
+        return true;
+      }
+
+      function setActiveTab(tab) {
+        if (!VALID_TABS.includes(tab) || AppState.activeTab === tab) {
+          return false;
+        }
+
+        AppState.activeTab = tab;
+        notifyStateChanged("active-tab");
+        return true;
+      }
+
+      function setActiveView(view) {
+        if (!VALID_VIEWS.includes(view) || AppState.activeView === view) {
+          return false;
+        }
+
+        AppState.activeView = view;
+        notifyStateChanged("active-view");
+        return true;
+      }
+
+      function setSearchSource(source) {
+        if (!VALID_SEARCH_SOURCES.includes(source) || AppState.searchSource === source) {
+          return false;
+        }
+
+        AppState.searchSource = source;
+        notifyStateChanged("search-source");
+        return true;
+      }
+
+      function setSearchState(patch, options = {}) {
+        AppState.search = {
+          ...AppState.search,
+          ...patch,
+        };
+
+        if (options.notify !== false) {
+          notifyStateChanged("search");
+        }
+      }
+
+      function setSearchResults(results, append = false) {
+        AppState.search.results = append ? [...AppState.search.results, ...results] : [...results];
+        notifyStateChanged("search-results");
+      }
+
+      function setBrowseContext(tab) {
+        const safeTab = VALID_BROWSE_TABS.includes(tab) ? tab : "mods";
+        if (AppState.browseContext.defaultTab === safeTab) {
+          return false;
+        }
+
+        AppState.browseContext = {
+          ...AppState.browseContext,
+          defaultTab: safeTab,
+        };
+        return true;
+      }
+
+      function setDirtyState(dirty) {
+        AppState.dirty = Boolean(dirty);
+        notifyStateChanged("dirty");
+      }
+
+      function setViewMode(scope, mode) {
+        if (!Object.prototype.hasOwnProperty.call(AppState.viewModes, scope) || !VALID_VIEW_MODES.includes(mode)) {
+          return false;
+        }
+
+        if (AppState.viewModes[scope] === mode) {
+          return false;
+        }
+
+        AppState.viewModes = {
+          ...AppState.viewModes,
+          [scope]: mode,
+        };
+
+        try {
+          localStorage.setItem(VIEW_MODE_STORAGE_KEY, JSON.stringify(AppState.viewModes));
+        } catch (error) {
+          console.warn("PackTracker: failed to save view mode preference", error);
+        }
+
+        notifyStateChanged("view-mode");
+        return true;
+      }
+
+      function getViewMode(scope) {
+        return AppState.viewModes && AppState.viewModes[scope] === "grid" ? "grid" : "list";
+      }
+
+      function getFavoritesProfile() {
+        const profiles = Array.isArray(AppState.data && AppState.data.profiles) ? AppState.data.profiles : [];
+        const favorites = {
+          id: FAVORITES_PROFILE_ID,
+          name: "Favorites",
+          mcVersion: "All versions",
+          loader: "vanilla",
+          loaderVersion: "",
+          createdAt: 0,
+          mods: [],
+          resourcePacks: [],
+          shaders: [],
+          isVirtual: true,
+        };
+
+        profiles.forEach((profile) => {
+          profile.mods
+            .filter((item) => item.starred)
+            .forEach((item) => {
+              favorites.mods.push({
+                ...item,
+                sourceProfileId: profile.id,
+                sourceProfileName: profile.name,
+              });
+            });
+
+          profile.resourcePacks
+            .filter((item) => item.starred)
+            .forEach((item) => {
+              favorites.resourcePacks.push({
+                ...item,
+                sourceProfileId: profile.id,
+                sourceProfileName: profile.name,
+              });
+            });
+
+          profile.shaders
+            .filter((item) => item.starred)
+            .forEach((item) => {
+              favorites.shaders.push({
+                ...item,
+                sourceProfileId: profile.id,
+                sourceProfileName: profile.name,
+              });
+            });
+        });
+
+        return favorites;
+      }
+
+      function getActiveProfile() {
+        if (AppState.activeProfileId === FAVORITES_PROFILE_ID) {
+          return getFavoritesProfile();
+        }
+
+        const profiles = Array.isArray(AppState.data && AppState.data.profiles) ? AppState.data.profiles : [];
+        return profiles.find((profile) => profile.id === AppState.activeProfileId) || null;
+      }
+
+      function isFavoritesProfileId(id) {
+        return id === FAVORITES_PROFILE_ID;
+      }
+
+      Object.assign(namespace, {
+        AppState,
+        FAVORITES_PROFILE_ID,
+        subscribe,
+        notifyStateChanged,
+        setData,
+        setActiveProfile,
+        setActiveTab,
+        setActiveView,
+        setSearchSource,
+        setSearchState,
+        setSearchResults,
+        setBrowseContext,
+        setDirtyState,
+        setViewMode,
+        getViewMode,
+        getActiveProfile,
+        isFavoritesProfileId,
+        getFavoritesProfile,
+      });
+    })();
+  </script>
+  <script src="./js/drag-order.js?v=20260429-7"></script>
+  <script src="./js/platform.js?v=20260429-7"></script>
+  <script src="./js/state.js?v=20260429-7"></script>
+  <script src="./js/storage.js?v=20260429-7"></script>
+  <script src="./js/auth-cloud.js?v=20260520-1"></script>
+  <script src="./js/addons.js?v=20260518-1"></script>
+  <script src="./js/modrinth.js?v=20260429-7"></script>
+  <script src="./js/curseforge.js?v=20260429-7"></script>
+  <script src="./js/download-cache.js?v=20260429-7"></script>
+  <script src="./js/scanner.js?v=20260429-7"></script>
+  <script src="./js/ui-sidebar.js?v=20260701-1"></script>
+  <script src="./js/ui-modlist.js?v=20260701-1"></script>
+  <script src="./js/ui-share.js?v=20260429-7"></script>
+  <script src="./js/ui-search.js?v=20260429-7"></script>
+  <script src="./js/main.js?v=20260701-1"></script>
+</body>
+</html>
