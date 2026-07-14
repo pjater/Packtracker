@@ -8,19 +8,6 @@ Live demo: https://packtracker.onrender.com
 
 Clone the repo, then open `index.html` in a browser or serve the folder with any static file server.
 
-## Supabase accounts setup
-
-PackTracker can soon use Supabase for hosted accounts, cloud-synced profiles/items/settings, and an admin-only account list.
-
-1. Create a Supabase project.
-2. Run the SQL in `supabase/schema.sql`.
-3. Add your public project URL and anon key to the two `<meta>` tags in `index.html`:
-   - `packtracker-supabase-url`
-   - `packtracker-supabase-anon-key`
-4. Insert at least one row into `public.user_roles` with role `admin` for the account that should see the admin account list.
-
-If those keys are left empty, PackTracker keeps working in local-only mode.
-
 ## Features
 
 - Profile management with local persistence
