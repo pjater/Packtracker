@@ -142,12 +142,16 @@ function renderScanResultsModal() {
     return;
   }
 
-  modalRoot.replaceChildren();
-  const overlay = document.createElement("div");
-  overlay.className = "modal-overlay scan-modal-overlay";
-
-  const modal = document.createElement("div");
-  modal.className = "modal modal-wide scan-modal";
+  let overlay = modalRoot.querySelector(".scan-modal-overlay");
+  let modal = overlay ? overlay.querySelector(".scan-modal") : null;
+  if (!overlay || !modal) {
+    overlay = document.createElement("div");
+    overlay.className = "modal-overlay scan-modal-overlay";
+    modal = document.createElement("div");
+    modal.className = "modal modal-wide scan-modal";
+    overlay.appendChild(modal);
+    modalRoot.replaceChildren(overlay);
+  }
 
   const header = document.createElement("div");
   header.className = "scan-modal-header";
@@ -243,9 +247,7 @@ function renderScanResultsModal() {
   doneButton.addEventListener("click", closeScanModal);
 
   actions.append(addAllButton, doneButton);
-  modal.append(header, betaNote, preferenceBar, list, actions);
-  overlay.appendChild(modal);
-  modalRoot.appendChild(overlay);
+  modal.replaceChildren(header, betaNote, preferenceBar, list, actions);
 
   window.removeEventListener("keydown", handleScanEscape);
   window.addEventListener("keydown", handleScanEscape);
@@ -267,6 +269,10 @@ function renderScanRow(row) {
 
   const status = document.createElement("div");
   status.className = `scan-status status-${row.status}`;
+  if (!row.statusIconShown && (row.status === "added" || row.status === "tracked" || row.status === "not-found")) {
+    status.classList.add("is-new");
+    row.statusIconShown = true;
+  }
   status.textContent = resolveStatusIcon(row.status);
 
   const text = document.createElement("div");
