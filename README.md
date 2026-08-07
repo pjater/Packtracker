@@ -24,6 +24,14 @@ Clone the repo, then open `index.html` in a browser or serve the folder with any
 
 ## Changelog
 
+### 2026.08.07
+
+- Added UI style options in Visual settings, including Blur and Glassy modes.
+- Added compact update-result icons with expandable More/Less logs.
+- Added an Advanced setting to choose compact update results or full logs by default.
+- Improved update progress with a large rounded progress circle and stable item status rows.
+- Fixed flickering in update progress, scan results, and the floating scroll-to-bottom button.
+
 ### 2026.05.18
 
 - Added a dedicated Keybinds settings tab with editable shortcuts and reset/save controls.
