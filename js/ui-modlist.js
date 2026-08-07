@@ -1,4 +1,4 @@
-﻿(function attachModListModule() {
+(function attachModListModule() {
   const namespace = window.PackTracker;
   const {
     AppState,
@@ -771,20 +771,26 @@ function renderModCard(mod, profileId, isEditing = false) {
   });
 
   const menuButton = document.createElement("button");
-  menuButton.className = "icon-btn";
+  menuButton.className = "star-btn item-menu-btn";
   menuButton.type = "button";
   menuButton.textContent = "⋯";
   menuButton.addEventListener("click", () => {
+    menuButton.classList.remove("bounce");
+    void menuButton.offsetWidth;
+    menuButton.classList.add("bounce");
     const rect = menuButton.getBoundingClientRect();
     showItemMenu(mod, sourceProfileId, "mod", rect.left, rect.bottom + 4);
   });
 
   const deleteButton = document.createElement("button");
-  deleteButton.className = "icon-btn delete-item-btn";
+  deleteButton.className = "star-btn delete-item-btn";
   deleteButton.type = "button";
   deleteButton.setAttribute("aria-label", `Remove ${mod.name} from profile`);
   deleteButton.textContent = "🗑";
   deleteButton.addEventListener("click", () => {
+    deleteButton.classList.remove("bounce");
+    void deleteButton.offsetWidth;
+    deleteButton.classList.add("bounce");
     removeTrackedItem(sourceProfileId, mod.id, "mod");
   });
 
@@ -935,20 +941,26 @@ function renderPackCard(item, profileId, type, isEditing = false) {
   });
 
   const menuButton = document.createElement("button");
-  menuButton.className = "icon-btn";
+  menuButton.className = "star-btn item-menu-btn";
   menuButton.type = "button";
   menuButton.textContent = "⋯";
   menuButton.addEventListener("click", () => {
+    menuButton.classList.remove("bounce");
+    void menuButton.offsetWidth;
+    menuButton.classList.add("bounce");
     const rect = menuButton.getBoundingClientRect();
     showItemMenu(item, sourceProfileId, type, rect.left, rect.bottom + 4);
   });
 
   const deleteButton = document.createElement("button");
-  deleteButton.className = "icon-btn delete-item-btn";
+  deleteButton.className = "star-btn delete-item-btn";
   deleteButton.type = "button";
   deleteButton.setAttribute("aria-label", `Remove ${item.name} from profile`);
   deleteButton.textContent = "🗑";
   deleteButton.addEventListener("click", () => {
+    deleteButton.classList.remove("bounce");
+    void deleteButton.offsetWidth;
+    deleteButton.classList.add("bounce");
     removeTrackedItem(sourceProfileId, item.id, type);
   });
 
@@ -1535,6 +1547,10 @@ function showAddManualModal(profileId, type) {
   const authorGroup = createTextField("Author");
   const versionGroup = createTextField("Version");
   const urlGroup = createTextField("URL");
+  nameGroup.input.placeholder = `Naam van je ${resolveTypeLabel(type).toLowerCase()}`;
+  authorGroup.input.placeholder = "Maker, team of website";
+  versionGroup.input.placeholder = "Bijvoorbeeld 1.0.0, v2.4 of 1.21.1";
+  urlGroup.input.placeholder = "Directe download URL of projectpagina, bijvoorbeeld https://modrinth.com/...";
   const notesGroup = document.createElement("div");
   notesGroup.className = "form-group";
   const notesLabel = document.createElement("label");
@@ -1542,6 +1558,7 @@ function showAddManualModal(profileId, type) {
   notesLabel.textContent = translate("notes", "Notes");
   const notesInput = document.createElement("textarea");
   notesInput.maxLength = 1200;
+  notesInput.placeholder = "Korte notitie over deze content, dependencies of installatie-instructies";
   notesGroup.append(notesLabel, notesInput);
   attachCharacterCounter(notesGroup, notesInput);
 
@@ -2253,7 +2270,13 @@ async function resolveBulkUpdateCandidateForSource(item, tab, targetVersion, pro
         message: `Switched to ${resolveSourceLabel(source)} on ${nextVersion.version_number || targetVersion}`,
       };
     }
-    return { kind: "skip", message: `Already on ${targetVersion}`, stopFallback: true };
+    return {
+      kind: "update",
+      project,
+      version: nextVersion,
+      source,
+      message: `Checked via ${resolveSourceLabel(source)}: already on ${nextVersion.version_number || targetVersion}`,
+    };
   }
 
   return {
@@ -2549,12 +2572,16 @@ function renderBulkUpdateProgressModal() {
     return;
   }
 
-  modalRoot.replaceChildren();
-  const overlay = document.createElement("div");
-  overlay.className = "modal-overlay download-modal-overlay";
-
-  const modal = document.createElement("div");
-  modal.className = "modal modal-wide download-modal";
+  let overlay = modalRoot.querySelector(".download-modal-overlay");
+  let modal = overlay ? overlay.querySelector(".download-modal") : null;
+  if (!overlay || !modal) {
+    overlay = document.createElement("div");
+    overlay.className = "modal-overlay download-modal-overlay";
+    modal = document.createElement("div");
+    modal.className = "modal modal-wide download-modal";
+    overlay.appendChild(modal);
+    modalRoot.replaceChildren(overlay);
+  }
 
   const header = document.createElement("div");
   header.className = "download-modal-header";
@@ -2583,19 +2610,29 @@ function renderBulkUpdateProgressModal() {
   header.append(titleWrap, closeButton);
 
   const progress = document.createElement("div");
-  progress.className = "download-progress";
-
-  const progressBar = document.createElement("div");
-  progressBar.className = "download-progress-bar";
-  const progressFill = document.createElement("div");
-  progressFill.className = "download-progress-fill";
-  progressFill.style.width = `${resolveBulkUpdateProgress(updateSession)}%`;
-  progressBar.appendChild(progressFill);
-
-  const progressLabel = document.createElement("div");
-  progressLabel.className = "download-progress-label";
-  progressLabel.textContent = `${resolveBulkUpdateProgress(updateSession)}%`;
-  progress.append(progressBar, progressLabel);
+  progress.className = "bulk-update-progress-ring";
+  const progressPercent = resolveBulkUpdateProgress(updateSession);
+  progress.style.setProperty("--bulk-update-progress-dash", String(Math.max(0, Math.min(100, progressPercent))));
+  const progressSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  progressSvg.setAttribute("viewBox", "0 0 120 120");
+  progressSvg.classList.add("bulk-update-progress-svg");
+  const progressTrack = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  progressTrack.classList.add("bulk-update-progress-track");
+  progressTrack.setAttribute("cx", "60");
+  progressTrack.setAttribute("cy", "60");
+  progressTrack.setAttribute("r", "50");
+  progressTrack.setAttribute("pathLength", "100");
+  const progressFill = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  progressFill.classList.add("bulk-update-progress-fill-ring");
+  progressFill.setAttribute("cx", "60");
+  progressFill.setAttribute("cy", "60");
+  progressFill.setAttribute("r", "50");
+  progressFill.setAttribute("pathLength", "100");
+  progressSvg.append(progressTrack, progressFill);
+  const progressValue = document.createElement("div");
+  progressValue.className = "bulk-update-progress-value";
+  progressValue.textContent = `${completedCount}/${updateSession.items.length}`;
+  progress.append(progressSvg, progressValue);
 
   const list = document.createElement("div");
   list.className = "download-list";
@@ -2607,15 +2644,46 @@ function renderBulkUpdateProgressModal() {
     name.className = "download-item-name";
     name.textContent = item.name;
 
-    const meta = document.createElement("div");
-    meta.className = `download-item-meta status-${item.status}`;
-    meta.textContent = `${resolveDownloadStatusIcon(item.status)} ${item.message}`;
+    const useCompactStatus = AppState.settings?.updateProgressDisplay !== "logs";
+    if (useCompactStatus && (item.status === UPDATE_ROW_STATES.UPDATED || item.status === UPDATE_ROW_STATES.ERROR || item.status === UPDATE_ROW_STATES.SKIPPED)) {
+      const isError = item.status === UPDATE_ROW_STATES.ERROR || item.status === UPDATE_ROW_STATES.SKIPPED;
+      const shouldAnimateStatus = !item.statusIconShown;
+      const statusWrap = document.createElement("div");
+      statusWrap.className = "bulk-update-item-status";
+      const check = document.createElement("span");
+      check.className = isError ? "bulk-update-check bulk-update-check-error" : "bulk-update-check";
+      if (shouldAnimateStatus) {
+        check.classList.add("is-new");
+        item.statusIconShown = true;
+      }
+      check.textContent = isError ? "×" : "✓";
+      const more = document.createElement("button");
+      more.className = "bulk-update-more";
+      more.type = "button";
+      more.textContent = item.detailsOpen ? "Less" : "More";
+      more.addEventListener("click", () => {
+        item.detailsOpen = !item.detailsOpen;
+        renderBulkUpdateProgressModal();
+      });
+      statusWrap.append(check, more);
+      row.append(name, statusWrap);
+      if (item.detailsOpen) {
+        const details = document.createElement("div");
+        details.className = "bulk-update-item-details";
+        details.textContent = `${item.message}\n${item.toVersion || item.fromVersion || ""}`.trim();
+        row.appendChild(details);
+      }
+    } else {
+      const meta = document.createElement("div");
+      meta.className = `download-item-meta status-${item.status}`;
+      meta.textContent = `${resolveDownloadStatusIcon(item.status)} ${item.message}`;
 
-    const version = document.createElement("div");
-    version.className = "download-item-size";
-    version.textContent = item.toVersion || item.fromVersion || "";
+      const version = document.createElement("div");
+      version.className = "download-item-size";
+      version.textContent = item.toVersion || item.fromVersion || "";
 
-    row.append(name, meta, version);
+      row.append(name, meta, version);
+    }
     list.appendChild(row);
   });
 
@@ -2629,9 +2697,7 @@ function renderBulkUpdateProgressModal() {
   doneButton.addEventListener("click", closeBulkUpdateModal);
   actions.appendChild(doneButton);
 
-  modal.append(header, progress, list, actions);
-  overlay.appendChild(modal);
-  modalRoot.appendChild(overlay);
+  modal.replaceChildren(header, progress, list, actions);
 }
 
 /**
