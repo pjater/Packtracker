@@ -1,4 +1,4 @@
-﻿(function attachStorageModule() {
+(function attachStorageModule() {
   const namespace = window.PackTracker;
   const { AppState, notifyStateChanged } = namespace;
   const LOCAL_STORAGE_KEY = "packtracker_profiles_v2";
@@ -9,8 +9,10 @@
   const COPY_SUFFIX = " (copy)";
   const SUPPORTED_LANGUAGES = ["en", "zh", "hi", "es", "ar"];
   const SUPPORTED_THEMES = ["dark", "light", "system"];
+  const SUPPORTED_UI_STYLES = ["packtracker", "blur", "glassy"];
   const SUPPORTED_DOWNLOAD_BEHAVIORS = ["browser", "ask", "default"];
   const SUPPORTED_SCROLL_DOWN_BUTTON_MODES = ["always", "smart", "never"];
+  const SUPPORTED_UPDATE_PROGRESS_DISPLAYS = ["icons", "logs"];
   const SUPPORTED_FONT_STYLES = ["default", "manrope", "poppins", "serif", "monospace"];
   const SUPPORTED_UPDATE_PROVIDER_PREFERENCES = ["auto", "modrinth", "curseforge"];
   const BUTTON_VISIBILITY_KEYS = [
@@ -595,6 +597,7 @@
     return normalizeAppSettings({
       language: inferDefaultLanguage(),
       theme: "dark",
+      uiStyle: "packtracker",
       accentColor: "#1ad969",
       blurStrength: 8,
       uiScale: 100,
@@ -608,6 +611,7 @@
       defaultDownloadDirectoryName: "",
       downloadBehavior: "browser",
       scrollDownButton: "smart",
+      updateProgressDisplay: "icons",
       confirmItemRemoval: false,
       buttonVisibility: createDefaultButtonVisibility(),
       seenReleaseNotesVersion: "",
@@ -630,6 +634,7 @@
     return {
       language: normalizeLanguage(value.language),
       theme: normalizeTheme(value.theme),
+      uiStyle: normalizeUiStyle(value.uiStyle),
       accentColor: normalizeAccentColor(value.accentColor),
       blurStrength: normalizeBlurStrength(value.blurStrength),
       uiScale: normalizeUiScale(value.uiScale),
@@ -643,6 +648,7 @@
       defaultDownloadDirectoryName: String(value.defaultDownloadDirectoryName || "").trim(),
       downloadBehavior: normalizeDownloadBehavior(value.downloadBehavior),
       scrollDownButton: normalizeScrollDownButtonMode(value.scrollDownButton),
+      updateProgressDisplay: normalizeUpdateProgressDisplay(value.updateProgressDisplay),
       confirmItemRemoval: Boolean(value.confirmItemRemoval),
       buttonVisibility: normalizeButtonVisibility(value.buttonVisibility),
       seenReleaseNotesVersion: String(value.seenReleaseNotesVersion || "").trim(),
@@ -889,6 +895,17 @@
   }
 
   /**
+   * Normalizes the selected interface style.
+   *
+   * @param {unknown} uiStyle - UI style candidate.
+   * @returns {"packtracker"|"blur"|"glassy"} Safe UI style.
+   */
+  function normalizeUiStyle(uiStyle) {
+    const value = String(uiStyle || "packtracker").trim().toLowerCase();
+    return SUPPORTED_UI_STYLES.includes(value) ? value : "packtracker";
+  }
+
+  /**
    * Normalizes the interface scale setting.
    *
    * @param {unknown} uiScale - Scale candidate.
@@ -900,6 +917,17 @@
       return 100;
     }
     return Math.min(125, Math.max(75, Math.round(numeric / 5) * 5));
+  }
+
+  /**
+   * Normalizes how bulk-update item results are shown.
+   *
+   * @param {unknown} display - Display mode candidate.
+   * @returns {"icons"|"logs"} Safe update-result display mode.
+   */
+  function normalizeUpdateProgressDisplay(display) {
+    const value = String(display || "icons").trim().toLowerCase();
+    return SUPPORTED_UPDATE_PROGRESS_DISPLAYS.includes(value) ? value : "icons";
   }
 
   /**
