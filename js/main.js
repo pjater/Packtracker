@@ -1,4 +1,4 @@
-﻿(function attachMainModule() {
+(function attachMainModule() {
   const {
     AppState,
     getActiveProfile,
@@ -80,14 +80,14 @@
   const PAGE_EXIT_MS = 120;
   const PAGE_ENTER_MS = 240;
   const RELEASE_NOTES = {
-    version: "2026.05.18",
+    version: "2026.08.07",
     title: "PackTracker update",
     bullets: [
-      "Added a dedicated Keybinds settings tab with editable shortcuts and reset/save controls.",
-      "Added an app scale setting in the Visual tab with 5% snap steps from 75% to 125%.",
-      "Added clear-all actions for profiles and for the active tab item list.",
-      "Improved the floating scroll-to-bottom button and its behavior in long pages, popups, and menus.",
-      "Tightened mobile and layout spacing so the app fits better on smaller screens and different ratios.",
+      "Added UI style options in Visual settings, including Blur and Glassy modes.",
+      "Added compact update-result icons with expandable More/Less logs.",
+      "Added an Advanced setting to choose compact update results or full logs by default.",
+      "Improved update progress with a large rounded progress circle and stable item status rows.",
+      "Fixed flickering in update progress, scan results, and the floating scroll-to-bottom button.",
     ],
   };
   const LANGUAGES = [
@@ -101,6 +101,11 @@
     { value: "dark", label: "Dark" },
     { value: "light", label: "Light" },
     { value: "system", label: "System" },
+  ];
+  const UI_STYLES = [
+    { value: "packtracker", label: "Standaard (PackTracker)" },
+    { value: "blur", label: "Blur" },
+    { value: "glassy", label: "Glassy" },
   ];
   const FONT_STYLES = [
     { value: "default", label: "Default" },
@@ -118,6 +123,10 @@
     { value: "always", labelKey: "always", label: "Always" },
     { value: "smart", labelKey: "smart", label: "Smart" },
     { value: "never", labelKey: "never", label: "Never" },
+  ];
+  const UPDATE_PROGRESS_DISPLAY_OPTIONS = [
+    { value: "icons", label: "Status icons" },
+    { value: "logs", label: "Full logs" },
   ];
   const BUTTON_VISIBILITY_OPTIONS = [
     { value: "show", labelKey: "show", label: "Show" },
@@ -966,6 +975,7 @@
   const BOOT_SCREEN_MIN_MS = 1000;
   const VISUAL_SETTINGS_KEYS = [
     "theme",
+    "uiStyle",
     "accentColor",
     "blurStrength",
     "uiScale",
@@ -1476,6 +1486,7 @@
     const accentColor = settings.accentColor || "#1ad969";
     const root = document.documentElement;
     root.dataset.theme = resolvedTheme;
+    root.dataset.uiStyle = settings.uiStyle || "packtracker";
     root.dataset.reduceMotion = settings.reduceMotion ? "true" : "false";
     root.dataset.contrast = settings.highContrast ? "high" : "normal";
     root.dataset.fontStyle = settings.fontStyle || "default";
@@ -2312,13 +2323,14 @@
       { key: "keybinds", label: t("keybinds", "Keybinds") },
       { key: "buttons", label: t("buttons", "Buttons") },
       { key: "advanced", label: t("advanced", "Advanced") },
-      { key: "addons", label: t("addons", "Addons") },
+      { key: "addons", label: `🔒 ${t("addons", "Addons")}`, locked: true },
       { key: "updates", label: t("updates", "Updates") },
       { key: "extra", label: t("extra", "Extra") },
       { key: "about", label: t("about", "About") },
     ].forEach((entry) => {
       const button = document.createElement("button");
       button.className = entry.key === activeTab ? "settings-tab active" : "settings-tab";
+      button.classList.toggle("locked", Boolean(entry.locked));
       button.type = "button";
       button.textContent = entry.label;
       button.addEventListener("click", () => {
@@ -2367,7 +2379,7 @@
     intro.textContent = t("generalSettingsIntro", "Choose language and other app-wide behavior settings.");
     panel.appendChild(intro);
 
-    const languageGroup = createSettingsField(t("language", "Language"));
+    const languageGroup = createSettingsField(t("language", "Language"), { experimental: true });
     const languageSelect = createSettingsDropdown(LANGUAGES, settings.language || "en", (value) => {
       AppState.settings = typeof updateAppSettings === "function"
         ? updateAppSettings({ language: value })
@@ -2525,6 +2537,18 @@
         : t("scrollDownButtonSmartHelp", "Show the button only after you scroll down a bit on long pages.");
     scrollDownGroup.append(scrollDownHelp, scrollDownSelect, scrollDownModeHelp);
 
+    const updateProgressGroup = createSettingsField("Update result display");
+    const updateProgressSelect = createSettingsDropdown(UPDATE_PROGRESS_DISPLAY_OPTIONS, settings.updateProgressDisplay || "icons", (value) => {
+      AppState.settings = typeof updateAppSettings === "function"
+        ? updateAppSettings({ updateProgressDisplay: value })
+        : AppState.settings;
+      showSettingsModal("advanced");
+    });
+    const updateProgressHelp = document.createElement("div");
+    updateProgressHelp.className = "settings-field-help";
+    updateProgressHelp.textContent = "Choose whether updated items show compact status icons or full update logs by default.";
+    updateProgressGroup.append(updateProgressSelect, updateProgressHelp);
+
     const confirmRemovalGroup = createSettingsField(t("confirmItemRemoval", "Confirm item removal"));
     confirmRemovalGroup.appendChild(createSettingsToggleControl({
       checked: Boolean(settings.confirmItemRemoval),
@@ -2537,7 +2561,7 @@
       },
     }));
 
-    panel.append(downloadsGroup, behaviorGroup, scrollDownGroup, confirmRemovalGroup);
+    panel.append(downloadsGroup, behaviorGroup, scrollDownGroup, updateProgressGroup, confirmRemovalGroup);
     return panel;
   }
 
@@ -2564,6 +2588,12 @@
       updateVisualSettingsDraft({ theme: value });
     });
     themeGroup.append(themeSelect, themeHelp);
+
+    const styleGroup = createSettingsField("Style", { experimental: true });
+    const styleSelect = createSettingsDropdown(UI_STYLES, settings.uiStyle || "packtracker", (value) => {
+      updateVisualSettingsDraft({ uiStyle: value });
+    });
+    styleGroup.appendChild(styleSelect);
 
     const accentGroup = createSettingsField(t("accentColor", "Accent color"));
     accentGroup.appendChild(createAccentColorPicker(settings.accentColor || "#1ad969"));
@@ -2681,7 +2711,7 @@
     });
     saveRow.append(saveStatus, resetButton, saveButton);
 
-    panel.append(themeGroup, accentGroup, blurGroup, scaleGroup, motionGroup, bootGroup, fontGroup, contrastGroup, cornersGroup, saveRow);
+    panel.append(themeGroup, styleGroup, accentGroup, blurGroup, scaleGroup, motionGroup, bootGroup, fontGroup, contrastGroup, cornersGroup, saveRow);
     return panel;
   }
 
@@ -2694,6 +2724,7 @@
   function createVisualSettingsDraft(settings) {
     return {
       theme: settings.theme || "dark",
+      uiStyle: settings.uiStyle || "packtracker",
       accentColor: settings.accentColor || "#1ad969",
       blurStrength: Number(settings.blurStrength ?? 8),
       uiScale: Number(settings.uiScale ?? 100),
@@ -2713,6 +2744,7 @@
   function createDefaultVisualSettingsDraft() {
     return createVisualSettingsDraft({
       theme: "dark",
+      uiStyle: "packtracker",
       accentColor: "#1ad969",
       blurStrength: 8,
       uiScale: 100,
@@ -3367,7 +3399,22 @@
    */
   function renderAddonsSettingsPanel(settings) {
     const panel = document.createElement("div");
-    panel.className = "settings-panel";
+    panel.className = "settings-panel settings-panel-locked";
+
+    const lockCard = document.createElement("div");
+    lockCard.className = "settings-locked-card";
+    const lockIcon = document.createElement("div");
+    lockIcon.className = "settings-locked-icon";
+    lockIcon.textContent = "🔒";
+    const lockTitle = document.createElement("div");
+    lockTitle.className = "settings-card-title";
+    lockTitle.textContent = "Coming soon";
+    const lockText = document.createElement("div");
+    lockText.className = "settings-field-help";
+    lockText.textContent = "Addons settings are locked for now.";
+    lockCard.append(lockIcon, lockTitle, lockText);
+    panel.appendChild(lockCard);
+    return panel;
 
     const intro = document.createElement("div");
     intro.className = "settings-panel-copy";
