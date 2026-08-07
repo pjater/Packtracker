@@ -1310,22 +1310,11 @@
       return;
     }
 
-    if (scrollDownControlState.hiding) {
-      return;
-    }
-
     button.classList.remove("is-visible");
-    button.classList.add("is-hiding");
-    scrollDownControlState.hiding = true;
+    button.classList.remove("is-hiding");
+    scrollDownControlState.hiding = false;
+    scrollDownControlState.renderedVisible = false;
     clearScrollDownHideTimer();
-    if (typeof window !== "undefined") {
-      scrollDownControlState.hideTimerId = window.setTimeout(() => {
-        scrollDownControlState.hideTimerId = null;
-        scrollDownControlState.hiding = false;
-        scrollDownControlState.renderedVisible = false;
-        button.classList.remove("is-hiding");
-      }, 220);
-    }
   }
 
   function scheduleScrollDownRevealTimer() {
